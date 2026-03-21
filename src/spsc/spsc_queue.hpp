@@ -32,8 +32,13 @@ private:
   }
 
 public:
-  SPSCQueue() : head(0), tail(0) {}
-  ~SPSCQueue() {
+  SPSCQueue() noexcept : head(0), tail(0) {}
+  SPSCQueue(const SPSCQueue&)            = delete;
+  SPSCQueue& operator=(const SPSCQueue&) = delete;
+  SPSCQueue(SPSCQueue&&)            = delete;
+  SPSCQueue& operator=(SPSCQueue&&) = delete;
+
+  ~SPSCQueue() noexcept {
     size_t tail_val = tail.load(std::memory_order_acquire);
     size_t head_val = head.load(std::memory_order_acquire);
     for (size_t i = tail_val; i != head_val; i = (i + 1) & (N - 1)) {
@@ -41,23 +46,23 @@ public:
     }
   }
 
-  bool empty() const {
+  bool empty() const noexcept {
     return head.load(std::memory_order_acquire) == tail.load(std::memory_order_relaxed);
   }
 
-  bool full() const {
+  bool full() const noexcept {
     return ((head.load(std::memory_order_relaxed) + 1) & (N - 1)) == tail.load(std::memory_order_acquire);
   }
 
-  bool push(const T& val) { return push_impl(val); }
-  bool push(T&& val) { return push_impl(std::move(val)); }
+  bool push(const T& val) noexcept { return push_impl(val); }
+  bool push(T&& val) noexcept { return push_impl(std::move(val)); }
 
   template<typename... Args>
-  bool emplace(Args&&... args) {
+  bool emplace(Args&&... args) noexcept {
     return push_impl(std::forward<Args>(args)...);
   }
 
-  std::optional<T> pop() {
+  std::optional<T> pop() noexcept {
     if (empty()) {
       return std::nullopt;
     }
