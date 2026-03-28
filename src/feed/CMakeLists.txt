@@ -1,4 +1,4 @@
-add_library(feed STATIC itch_parser.cpp)
+add_library(feed STATIC feed_handler.cpp)
 
 target_include_directories(feed PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -6,5 +6,5 @@ target_include_directories(feed PUBLIC
 
 target_link_libraries(feed
         PRIVATE fastbook_options
-        PUBLIC  spsc
+        PUBLIC spsc
 )

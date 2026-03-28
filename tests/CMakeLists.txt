@@ -1,8 +1,9 @@
-add_executable(fastbook_tests test_spsc.cpp)
+add_executable(fastbook_tests test_spsc.cpp test_hashmap.cpp)
 
 target_link_libraries(fastbook_tests
         PRIVATE fastbook_options
         PRIVATE spsc
+        PRIVATE orderbook
         PRIVATE GTest::gtest_main
 )
 
