@@ -5,13 +5,16 @@
 #include <utility>
 
 template <typename V>
-concept HashNode = std::is_pointer<V>::value;
+concept HashNode = std::is_pointer_v<V>;
+
+template <typename K>
+concept TrivialKey = std::is_trivially_copyable_v<K>;
 
 template <typename K> struct FibHash {
   size_t operator()(K key) const noexcept { return key * 0x9e3779b97f4a7c15; }
 };
 
-template <typename K, HashNode V, typename Hash = FibHash<K>> class HashMap {
+template <TrivialKey K, HashNode V, typename Hash = FibHash<K>> class HashMap {
 private:
   std::unique_ptr<std::pair<K, V>[]> data_;
   size_t size_;
@@ -66,10 +69,18 @@ public:
 
   bool insert(K key, V value) noexcept {
     size_t pos = get_pos(key);
+    size_t first_deleted = capacity_;
     for (size_t i = 0; i < capacity_; i++) {
       size_t slot = (pos + i) & (capacity_ - 1);
-      if (is_empty(slot) || is_deleted(slot)) {
-        data_[slot] = std::move(std::make_pair(key, value));
+      if (is_deleted(slot)) {
+        if (first_deleted == capacity_)
+          first_deleted = slot;
+        continue;
+      }
+      if (is_empty(slot)) {
+        size_t insert_slot =
+            (first_deleted != capacity_) ? first_deleted : slot;
+        data_[insert_slot] = {key, value};
         size_++;
         return true;
       }
@@ -77,7 +88,11 @@ public:
         return false;
       }
     }
-
+    if (first_deleted != capacity_) {
+      data_[first_deleted] = {key, value};
+      size_++;
+      return true;
+    }
     return false;
   }
 
