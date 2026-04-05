@@ -10,4 +10,4 @@ target_link_libraries(fastbook_tests
 )
 
 include(GoogleTest)
-gtest_discover_tests(fastbook_tests)
+gtest_discover_tests(fastbook_tests DISCOVERY_TIMEOUT 30 DISCOVERY_MODE PRE_TEST)

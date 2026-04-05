@@ -112,13 +112,13 @@ TEST_F(OrderBookTest, BestAskUpdatesAfterCancelOfBest) {
   book.add_order(1, 100, 1015, Side::ASK);
   book.add_order(2, 100, 1020, Side::ASK);
   book.cancel_order(1);
-  EXPECT_EQ(book.best_price(Side::ASK), 1020u);
+  EXPECT_EQ(book.best_price(Side::ASK), 1020);
 }
 
 TEST_F(OrderBookTest, BestBidBecomesZeroAfterAllCancelled) {
   book.add_order(1, 100, 1010, Side::BID);
   book.cancel_order(1);
-  EXPECT_EQ(book.best_price(Side::BID), 0u);
+  EXPECT_EQ(book.best_price(Side::BID), 0);
 }
 
 TEST_F(OrderBookTest, BestPriceUpdatesAfterFullExecute) {

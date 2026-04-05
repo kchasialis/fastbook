@@ -62,10 +62,10 @@ TEST_F(FeedHandlerTest, ParseAddOrder) {
   auto msg = queue.consumer().pop();
   ASSERT_TRUE(msg.has_value());
   EXPECT_EQ(msg->type, MsgType::AddOrder);
-  EXPECT_EQ(msg->add_order.order_ref_num, 42u);
+  EXPECT_EQ(msg->add_order.order_ref_num, 42);
   EXPECT_EQ(msg->add_order.side, 'B');
-  EXPECT_EQ(msg->add_order.shares, 100u);
-  EXPECT_EQ(msg->add_order.price, 10050u);
+  EXPECT_EQ(msg->add_order.shares, 100);
+  EXPECT_EQ(msg->add_order.price, 10050);
 }
 
 TEST_F(FeedHandlerTest, ParseOrderDelete) {
@@ -75,7 +75,7 @@ TEST_F(FeedHandlerTest, ParseOrderDelete) {
   auto msg = queue.consumer().pop();
   ASSERT_TRUE(msg.has_value());
   EXPECT_EQ(msg->type, MsgType::OrderDelete);
-  EXPECT_EQ(msg->order_delete.order_ref_num, 99u);
+  EXPECT_EQ(msg->order_delete.order_ref_num, 99);
 }
 
 TEST_F(FeedHandlerTest, UnknownMsgTypeIgnored) {
@@ -116,5 +116,5 @@ TEST_F(FeedHandlerTest, MessageSplitAcrossTwoFeeds) {
   auto msg = queue.consumer().pop();
   ASSERT_TRUE(msg.has_value());
   EXPECT_EQ(msg->type, MsgType::AddOrder);
-  EXPECT_EQ(msg->add_order.order_ref_num, 7u);
+  EXPECT_EQ(msg->add_order.order_ref_num, 7);
 }

@@ -131,7 +131,7 @@ TEST(SPSCQueueThreaded, ProducerConsumer) {
   consumer_thread.join();
 
   ASSERT_EQ(received.size(), N);
-  for (int i = 0; i < N; i++) {
-    EXPECT_EQ(received[i], i);
+  for (size_t i = 0; i < N; i++) {
+    EXPECT_EQ(received[i], static_cast<int>(i));
   }
 }
