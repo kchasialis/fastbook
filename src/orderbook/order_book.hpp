@@ -230,6 +230,15 @@ public:
     return true;
   }
 
+  Order *get_first_order(uint32_t price) const noexcept {
+    uint32_t price_slot = ((price - base_price_) / tick_size_) % window_size_;
+    PriceLevel &level = levels_[price_slot];
+
+    assert(level.head);
+
+    return level.head;
+  }
+
   uint32_t best_price(Side side) const noexcept {
     switch (side) {
     case Side::ASK:

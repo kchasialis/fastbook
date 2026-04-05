@@ -1,10 +1,10 @@
-add_library(orderbook STATIC order_book.cpp)
+add_library(orderbook INTERFACE)
 
-target_include_directories(orderbook PUBLIC
+target_include_directories(orderbook INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
 
 target_link_libraries(orderbook
-        PRIVATE fastbook_options
-        PUBLIC  spsc
+        INTERFACE fastbook_options
+        INTERFACE spsc
 )
