@@ -18,6 +18,13 @@ struct Args {
   uint16_t port;
 };
 
+void usage(const char *prog) {
+  std::cerr << "Usage: " << prog << " -i <ip> -m <mcast_ip> -p <port>\n"
+            << "  -i  bind address\n"
+            << "  -m  multicast group IP\n"
+            << "  -p  UDP port\n";
+}
+
 int parse_args(int argc, char *argv[], Args *args) {
   static option long_opts[] = {{"ip", required_argument, nullptr, 'i'},
                                {"mcast", required_argument, nullptr, 'm'},
@@ -38,10 +45,10 @@ int parse_args(int argc, char *argv[], Args *args) {
       args->port = static_cast<uint16_t>(atoi(optarg));
       break;
     case ':':
-      std::cerr << "option requires an argument" << std::endl;
+      std::cerr << "option requires an argument\n";
       return -1;
     case '?':
-      std::cerr << "unknown option" << std::endl;
+      std::cerr << "unknown option\n";
       return -1;
     }
   }
@@ -57,9 +64,15 @@ void run_producer(FeedReader<UDPSource> &reader, BookBuilder &book_builder) {
 void run_consumer(BookBuilder &book_builder) { book_builder.run(); }
 
 int main(int argc, char *argv[]) {
+  if (argc < 7) {
+    usage(argv[0]);
+    return 1;
+  }
+
   Args args;
   if (parse_args(argc, argv, &args) < 0) {
-    throw std::runtime_error("Invalid program arguments provided");
+    usage(argv[0]);
+    return 1;
   }
 
   Queue queue;

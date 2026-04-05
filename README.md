@@ -44,7 +44,7 @@ flowchart TD
 |--------|-------------|------------|
 | **SPSC Queue** | Lock-free ring buffer connecting the producer and consumer threads. | `producer()` → `SPSCProducer`<br>`consumer()` → `SPSCConsumer`<br>`SPSCProducer::push(T)` → `bool`<br>`SPSCProducer::emplace(Args...)` → `bool`<br>`SPSCConsumer::pop()` → `optional<T>` |
 | **Feed Handler** | A NASDAQ ITCH 5.0 parser. | `feed(span<const byte>)` |
-| **Order Book** | Price-level book backed by a sliding circular window. Orders at each level held in an intrusive doubly-linked list. | <br>`add_order(oid, shares, price, side)` → `bool`<br>`cancel_order(oid)` → `bool`<br>`execute_order(oid, executed_shares)` → `bool`<br>`reduce_order(oid, cancelled_shares)` → `bool`<br>`best_price(side)` → `uint32_t` |
+| **Order Book** | Price-level book using sliding circular window. Orders at each level held in an intrusive doubly-linked list. | <br>`add_order(oid, shares, price, side)` → `bool`<br>`cancel_order(oid)` → `bool`<br>`execute_order(oid, executed_shares)` → `bool`<br>`reduce_order(oid, cancelled_shares)` → `bool`<br>`best_price(side)` → `uint32_t` |
 | **Matching Engine** | Greedy price-time priority matching. Walks the passive side of the book from best price until the aggressor is filled or price no longer crosses. | `match(agg_order_id, side, price, qty, span<Fill>)` → `size_t` |
 | **Slab Allocator** | Pre-allocated object pool with an intrusive free list. Eliminates heap allocation for order nodes on the hot path. | `allocate()` → `T*`<br>`deallocate(T*)` |
 | **HashMap** | Open-addressing hash table with linear probing. Used for O(1) order lookup by ID. | `insert(key, value)` → `bool`<br>`find(key)` → `V`<br>`erase(key)` → `bool` |
@@ -63,7 +63,7 @@ cmake --build --preset debug && ctest --preset debug
 ```
 
 ```bash
-./fastbook -i 0.0.0.0 -m 233.54.12.111 -p 26477
+./build/release/bin/fastbook -i 0.0.0.0 -m 233.54.12.111 -p 26477
 ```
 
 ---
