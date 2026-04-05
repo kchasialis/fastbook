@@ -8,7 +8,9 @@ protected:
   static constexpr uint32_t TICK = 1;
   static constexpr uint32_t WIN = 64;
 
-  OrderBook book{BASE, TICK, WIN};
+  OrderBook book;
+
+  void SetUp() override { book.reset(BASE, TICK, WIN); }
 };
 
 TEST_F(OrderBookTest, AddOrderSucceeds) {

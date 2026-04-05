@@ -159,11 +159,16 @@ private:
   }
 
 public:
-  OrderBook(uint32_t base_price, uint32_t tick_size, uint32_t window_size)
-      : levels_(new PriceLevel[window_size]{}), base_price_(base_price),
-        tick_size_(tick_size), window_size_(window_size),
-        best_bid_slot_(window_size), best_ask_slot_(window_size),
-        allocator_(MAX_ORDERS), orders_(MAX_ORDERS) {}
+  OrderBook() : allocator_(MAX_ORDERS), orders_(MAX_ORDERS) {}
+
+  void reset(uint32_t base_price, uint32_t tick_size, uint32_t window_size) {
+    base_price_ = base_price;
+    tick_size_ = tick_size;
+    window_size_ = window_size;
+    levels_ = std::make_unique<PriceLevel[]>(window_size);
+    best_bid_slot_ = window_size;
+    best_ask_slot_ = window_size;
+  }
 
   bool add_order(order_id_t oid, uint32_t shares, uint32_t price,
                  Side side) noexcept {

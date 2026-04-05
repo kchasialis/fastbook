@@ -3,8 +3,6 @@
 #include "feed_handler.hpp"
 #include "spsc_queue.hpp"
 
-using Queue = SPSCQueue<Message, 64>;
-
 template <typename T> static void write_be(std::vector<std::byte> &buf, T val) {
   for (int i = static_cast<int>(sizeof(T)) - 1; i >= 0; i--) {
     buf.push_back(static_cast<std::byte>((val >> (8 * i)) & 0xFF));

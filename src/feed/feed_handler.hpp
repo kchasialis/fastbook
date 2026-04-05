@@ -1,3 +1,5 @@
+#pragma once
+
 #include <bit>
 #include <cassert>
 #include <cstddef>
@@ -7,6 +9,9 @@
 #include <span>
 
 #include "itch_messages.hpp"
+#include "spsc_queue.hpp"
+
+using Queue = SPSCQueue<Message, 64>;
 
 template <typename T> T from_big_endian(T value) noexcept {
   if constexpr (std::endian::native == std::endian::little) {
