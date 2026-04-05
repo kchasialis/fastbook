@@ -1,6 +1,6 @@
 # fastbook
 
-A low-latency market data processing system. Implements a full NASDAQ ITCH 5.0 pipeline in C++23: network feed ingestion, lock-free message passing, and a slab-allocated order book with a price-time priority matching engine.
+A low-latency market data processing system. Implements a full NASDAQ ITCH 5.0 pipeline in C++23: network feed ingestion, message passing via a lock-free queue, and an order book with a price-time priority matching engine.
 
 ![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?style=flat-square&logo=cplusplus)
 ![Platform](https://img.shields.io/badge/platform-macOS%20M1%20%7C%20Linux%20x86--64-lightgrey?style=flat-square)
