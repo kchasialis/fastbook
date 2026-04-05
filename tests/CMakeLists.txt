@@ -1,4 +1,4 @@
-add_executable(fastbook_tests test_spsc.cpp test_hashmap.cpp)
+add_executable(fastbook_tests test_spsc.cpp test_hashmap.cpp test_order_book.cpp)
 
 target_link_libraries(fastbook_tests
         PRIVATE fastbook_options
