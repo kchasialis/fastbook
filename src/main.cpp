@@ -9,26 +9,27 @@
 #include <cstdint>
 #include <getopt.h>
 #include <iostream>
-#include <stdexcept>
 #include <thread>
 
 struct Args {
-  const char *ip;
-  const char *mcast;
-  uint16_t port;
+  const char *ip{nullptr};
+  const char *mcast{nullptr};
+  const char *file{nullptr};
+  uint16_t port{0};
 };
 
 void usage(const char *prog) {
-  std::cerr << "Usage: " << prog << " -i <ip> -m <mcast_ip> -p <port>\n"
-            << "  -i  bind address\n"
-            << "  -m  multicast group IP\n"
-            << "  -p  UDP port\n";
+  std::cerr << "Usage:\n"
+            << "  " << prog
+            << " -f <file>                        (file replay)\n"
+            << "  " << prog << " -i <ip> -m <mcast_ip> -p <port>  (live UDP)\n";
 }
 
-int parse_args(int argc, char *argv[], Args *args) {
+int parse_args(int argc, char *argv[], Args &args) {
   static option long_opts[] = {{"ip", required_argument, nullptr, 'i'},
                                {"mcast", required_argument, nullptr, 'm'},
                                {"port", required_argument, nullptr, 'p'},
+                               {"file", required_argument, nullptr, 'f'},
                                {nullptr, 0, nullptr, 0}};
 
   int opt;
@@ -36,13 +37,16 @@ int parse_args(int argc, char *argv[], Args *args) {
          -1) {
     switch (opt) {
     case 'i':
-      args->ip = optarg;
+      args.ip = optarg;
       break;
     case 'm':
-      args->mcast = optarg;
+      args.mcast = optarg;
       break;
     case 'p':
-      args->port = static_cast<uint16_t>(atoi(optarg));
+      args.port = static_cast<uint16_t>(atoi(optarg));
+      break;
+    case 'f':
+      args.file = optarg;
       break;
     case ':':
       std::cerr << "option requires an argument\n";
@@ -56,41 +60,51 @@ int parse_args(int argc, char *argv[], Args *args) {
   return 0;
 }
 
-void run_producer(FeedReader<UDPSource> &reader, BookBuilder &book_builder) {
-  reader.run();
-  book_builder.stop();
+template <typename Source>
+void run(Source &src, Queue &queue, OrderBook &order_book,
+         MatchingEngine &engine) {
+  Queue::SPSCProducer prod(queue);
+  FeedHandler<Queue> feed_handler(prod);
+  Queue::SPSCConsumer cons(queue);
+  FeedReader<Source> feed_reader(src, feed_handler);
+  BookBuilder book_builder(cons, order_book, engine);
+
+  std::thread tproducer([&] {
+    feed_reader.run();
+    book_builder.stop();
+  });
+  std::thread tconsumer([&] { book_builder.run(); });
+
+  tproducer.join();
+  tconsumer.join();
 }
 
-void run_consumer(BookBuilder &book_builder) { book_builder.run(); }
-
 int main(int argc, char *argv[]) {
-  if (argc < 7) {
+  if (argc < 2) {
     usage(argv[0]);
     return 1;
   }
 
   Args args;
-  if (parse_args(argc, argv, &args) < 0) {
+  if (parse_args(argc, argv, args) < 0) {
     usage(argv[0]);
     return 1;
   }
 
   Queue queue;
-  UDPSource udp_src(args.ip, args.mcast, args.port);
   OrderBook order_book{};
-  Queue::SPSCProducer prod(queue);
-  FeedHandler<Queue> feed_handler(prod);
-  Queue::SPSCConsumer consumer(queue);
-  FeedReader<UDPSource> feed_reader(udp_src, feed_handler);
   MatchingEngine engine(order_book);
-  BookBuilder book_builder(consumer, order_book, engine);
 
-  std::thread tproducer(run_producer, std::ref(feed_reader),
-                        std::ref(book_builder));
-  std::thread tconsumer(run_consumer, std::ref(book_builder));
-
-  tproducer.join();
-  tconsumer.join();
+  if (args.file) {
+    FileSource src(args.file);
+    run(src, queue, order_book, engine);
+  } else if (args.ip && args.mcast && args.port) {
+    UDPSource src(args.ip, args.mcast, args.port);
+    run(src, queue, order_book, engine);
+  } else {
+    usage(argv[0]);
+    return 1;
+  }
 
   return 0;
 }
