@@ -1,20 +1,16 @@
 #include <gtest/gtest.h>
 
-#include "feed_handler.cpp"
+#include "feed_handler.hpp"
 #include "spsc_queue.hpp"
 
-using namespace fastbook::feed;
 using Queue = SPSCQueue<Message, 64>;
 
-// Writes value V in big-endian into buf
-template <typename T>
-static void write_be(std::vector<std::byte> &buf, T val) {
+template <typename T> static void write_be(std::vector<std::byte> &buf, T val) {
   for (int i = static_cast<int>(sizeof(T)) - 1; i >= 0; i--) {
     buf.push_back(static_cast<std::byte>((val >> (8 * i)) & 0xFF));
   }
 }
 
-// Writes 6 zero bytes for timestamp field
 static void write_timestamp(std::vector<std::byte> &buf, uint64_t ts = 0) {
   for (int i = 5; i >= 0; i--) {
     buf.push_back(static_cast<std::byte>((ts >> (8 * i)) & 0xFF));
@@ -22,13 +18,12 @@ static void write_timestamp(std::vector<std::byte> &buf, uint64_t ts = 0) {
 }
 
 static std::vector<std::byte> make_add_order(uint64_t order_ref, char side,
-                                              uint32_t shares, uint32_t price) {
+                                             uint32_t shares, uint32_t price) {
   std::vector<std::byte> msg;
-  // payload: type + fields
   std::vector<std::byte> payload;
   payload.push_back(static_cast<std::byte>('A'));
-  write_be<uint16_t>(payload, 1);  // stock_locate
-  write_be<uint16_t>(payload, 0);  // tracking_number
+  write_be<uint16_t>(payload, 1);
+  write_be<uint16_t>(payload, 0);
   write_timestamp(payload);
   write_be<uint64_t>(payload, order_ref);
   payload.push_back(static_cast<std::byte>(side));
@@ -46,8 +41,8 @@ static std::vector<std::byte> make_order_delete(uint64_t order_ref) {
   std::vector<std::byte> msg;
   std::vector<std::byte> payload;
   payload.push_back(static_cast<std::byte>('D'));
-  write_be<uint16_t>(payload, 1);  // stock_locate
-  write_be<uint16_t>(payload, 0);  // tracking_number
+  write_be<uint16_t>(payload, 1);
+  write_be<uint16_t>(payload, 0);
   write_timestamp(payload);
   write_be<uint64_t>(payload, order_ref);
 
@@ -115,7 +110,6 @@ TEST_F(FeedHandlerTest, MultipleMessagesInOneFeed) {
 TEST_F(FeedHandlerTest, MessageSplitAcrossTwoFeeds) {
   auto buf = make_add_order(7, 'S', 200, 5000);
 
-  // split in the middle
   size_t split = buf.size() / 2;
   handler.feed({buf.data(), split});
   EXPECT_FALSE(queue.consumer().pop().has_value());

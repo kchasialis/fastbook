@@ -8,7 +8,6 @@
 
 #include "itch_messages.hpp"
 
-namespace fastbook::feed {
 template <typename T> T from_big_endian(T value) noexcept {
   if constexpr (std::endian::native == std::endian::little) {
     return std::byteswap(value);
@@ -224,7 +223,7 @@ public:
 
     while (reader.has_bytes()) {
       const std::byte *save_bytes = reader.data();
-      size_t rem = reader.remaining();
+      uint32_t rem = static_cast<uint32_t>(reader.remaining());
       if (rem < 2) {
         std::memcpy(reassembly_buffer_, save_bytes, rem);
         leftover_bytes_ = rem;
@@ -246,5 +245,3 @@ public:
     }
   }
 };
-
-} // namespace fastbook::feed

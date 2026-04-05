@@ -2,8 +2,6 @@
 
 #include <cstdint>
 
-namespace fastbook::feed {
-
 struct AddOrder {
   uint16_t stock_locate;
   uint16_t tracking_number;
@@ -95,5 +93,3 @@ struct Message {
     OrderReplace order_replace;
   };
 };
-
-} // namespace fastbook::feed

@@ -230,6 +230,19 @@ public:
     return true;
   }
 
+  bool reduce_order(order_id_t oid, uint32_t cancelled_shares) noexcept {
+    return execute_order(oid, cancelled_shares);
+  }
+
+  Order *get_order_by_oid(order_id_t oid) {
+    Order *order;
+    if ((order = orders_.find(oid)) == nullptr) [[unlikely]] {
+      return nullptr;
+    }
+
+    return order;
+  }
+
   Order *get_first_order(uint32_t price) const noexcept {
     uint32_t price_slot = ((price - base_price_) / tick_size_) % window_size_;
     PriceLevel &level = levels_[price_slot];
