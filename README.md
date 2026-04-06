@@ -63,7 +63,7 @@ cmake --build --preset debug && ctest --preset debug
 ```
 
 ```bash
-./build/release/bin/fastbook -i 0.0.0.0 -m 233.54.12.111 -p 26477
+./build/release/bin/fastbook -f ./data/sample.itch
 ```
 
 ---
@@ -112,4 +112,5 @@ fastbook/
 │   └── test_feed_handler.cpp
 └── bench/
     └── bench_spsc.cpp
+    └── bench_order_book.cpp
 ```

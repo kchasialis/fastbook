@@ -14,6 +14,7 @@ private:
   OrderBook &book_;
   MatchingEngine &engine_;
   std::atomic<bool> stop_;
+  std::atomic<uint64_t> msg_count_{0};
   bool initialized_ = false;
 
   void init_book(uint32_t price) {
@@ -87,6 +88,7 @@ public:
         }
       }
 
+      msg_count_.fetch_add(1, std::memory_order_relaxed);
       const auto &msg = message.value();
       switch (msg.type) {
       case MsgType::AddOrder:
@@ -117,4 +119,5 @@ public:
   }
 
   void stop() { stop_.store(true, std::memory_order_release); }
+  uint64_t message_count() const { return msg_count_.load(std::memory_order_relaxed); }
 };
