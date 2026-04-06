@@ -110,7 +110,7 @@ fastbook/
 │   ├── test_order_book.cpp
 │   ├── test_matching_engine.cpp
 │   └── test_feed_handler.cpp
-└── bench/
-    └── bench_spsc.cpp
+├── bench/
+│   ├── bench_spsc.cpp
     └── bench_order_book.cpp
 ```
