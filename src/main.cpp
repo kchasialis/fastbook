@@ -20,8 +20,6 @@ struct Args {
 
 struct Stats {
   uint64_t msg_count;
-  uint32_t best_bid;
-  uint32_t best_ask;
 };
 
 void usage(const char *prog) {
@@ -67,13 +65,12 @@ int parse_args(int argc, char *argv[], Args &args) {
 }
 
 template <typename Source>
-Stats run(Source &src, Queue &queue, OrderBook &order_book,
-          MatchingEngine &engine) {
+Stats run(Source &src, Queue &queue, MatchingEngine &engine) {
   auto producer = queue.producer();
   auto consumer = queue.consumer();
   FeedHandler<Queue> feed_handler(producer);
   FeedReader<Source> feed_reader(src, feed_handler);
-  BookBuilder book_builder(consumer, order_book, engine);
+  BookBuilder book_builder(consumer, engine);
 
   std::thread tproducer([&] {
     feed_reader.run();
@@ -84,8 +81,7 @@ Stats run(Source &src, Queue &queue, OrderBook &order_book,
   tproducer.join();
   tconsumer.join();
 
-  return {book_builder.message_count(), order_book.best_price(Side::BID),
-          order_book.best_price(Side::ASK)};
+  return {book_builder.message_count()};
 }
 
 int main(int argc, char *argv[]) {
@@ -101,24 +97,21 @@ int main(int argc, char *argv[]) {
   }
 
   Queue queue;
-  OrderBook order_book{};
-  MatchingEngine engine(order_book);
+  MatchingEngine engine;
   Stats stats{};
 
   if (args.file) {
     FileSource src(args.file);
-    stats = run(src, queue, order_book, engine);
+    stats = run(src, queue, engine);
   } else if (args.ip && args.mcast && args.port) {
     UDPSource src(args.ip, args.mcast, args.port);
-    stats = run(src, queue, order_book, engine);
+    stats = run(src, queue, engine);
   } else {
     usage(argv[0]);
     return 1;
   }
 
-  std::cout << "messages : " << stats.msg_count << "\n"
-            << "best bid : " << stats.best_bid << "\n"
-            << "best ask : " << stats.best_ask << "\n";
+  std::cout << "messages : " << stats.msg_count << "\n";
 
   return 0;
 }
