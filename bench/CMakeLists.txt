@@ -1,6 +1,7 @@
 add_executable(fastbook_bench
     bench_spsc.cpp
     bench_order_book.cpp
+    bench_hashmap.cpp
 )
 
 target_link_libraries(fastbook_bench
