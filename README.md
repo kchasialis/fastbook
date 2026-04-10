@@ -80,6 +80,56 @@ cmake --build --preset debug && ctest --preset debug
 
 ---
 
+## Benchmarks
+
+Benchmarks run on Apple M1, compiled with `-O3`. For each benchmark the running thread is pinned to a specific core via `pthread_set_qos_class_self_np`. Baseline implementation uses `std::mutex` for synchronization & STL containers.
+
+Run with:
+```bash
+./build/release/bin/fastbook_bench
+```
+
+### SPSC Queue vs mutex + `std::queue`
+
+The latency benchmark is a ping-pong: the main thread pushes a value, a responder thread echoes it back, the main thread pops. In each iteration, the round-trip cost is measured.
+
+```
+Benchmark                             Time          Baseline      Speedup
+------------------------------------------------------------------------
+Throughput (65536 items)        20.6 M/s        13.9 M/s          1.5×
+Round-trip latency (p50)          167 ns          6292 ns          38×
+Round-trip latency (p99)          209 ns         39375 ns         188×
+```
+
+The mutex baseline pays for a futex syscall on contention. The SPSC queue spins on a cache line — no kernel involvement.
+
+### Order Book vs STL baseline
+
+In this benchmark I measure the latency of my order book vs an order book implemented using C++ standard library.
+Steady-state workload: 2048 live orders, each iteration cancels one and adds a new one. The STL baseline uses `std::unordered_map` + `std::map` + `new`/`delete` + `std::mutex`.
+
+```
+Benchmark                             Time          Baseline      Speedup
+------------------------------------------------------------------------
+cancel + add (steady-state)        6.64 ns          166 ns          25×
+best_price lookup                  0.39 ns         9.12 ns          23×
+```
+
+The fastbook order book uses a slab allocator (no heap allocation on the hot path), an open-addressing hash map, and a flat array of price levels with a cached best-price slot.
+
+### HashMap vs `std::unordered_map`
+
+```
+Benchmark                             Time          Baseline      Speedup
+------------------------------------------------------------------------
+find (50% load factor)             1.01 ns         2.04 ns          2×
+insert + erase (steady-state)      15.3 ns         43.4 ns          2.8×
+```
+
+Open addressing keeps keys and values in a contiguous array — one cache line per probe vs pointer chase to a heap-allocated bucket in `std::unordered_map`.
+
+---
+
 ## Project structure
 
 ```
@@ -113,4 +163,6 @@ fastbook/
 ├── bench/
 │   ├── bench_spsc.cpp
     └── bench_order_book.cpp
+    └── bench_hashmap.cpp
+    └── bench_utils.hpp
 ```

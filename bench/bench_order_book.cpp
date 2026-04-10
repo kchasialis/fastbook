@@ -1,3 +1,4 @@
+#include "bench_utils.hpp"
 #include "hash_map.hpp"
 #include "order_book.hpp"
 #include <algorithm>
@@ -87,6 +88,8 @@ public:
 };
 
 static void BM_OrderBook_SteadyState(benchmark::State &state) {
+  pin_to_core(0);
+
   OrderBook book;
   book.reset(100, 1, 1024);
   for (size_t i = 0; i < OB_LIVE_COUNT; i++) {
@@ -105,6 +108,8 @@ static void BM_OrderBook_SteadyState(benchmark::State &state) {
 BENCHMARK(BM_OrderBook_SteadyState);
 
 static void BM_OrderBook_BestPrice(benchmark::State &state) {
+  pin_to_core(0);
+
   OrderBook book;
   book.reset(100, 1, 1024);
   for (size_t i = 0; i < OB_LIVE_COUNT; i++) {
@@ -118,6 +123,8 @@ static void BM_OrderBook_BestPrice(benchmark::State &state) {
 BENCHMARK(BM_OrderBook_BestPrice);
 
 static void BM_StlOrderBook_SteadyState(benchmark::State &state) {
+  pin_to_core(0);
+
   StlOrderBook book;
   for (size_t i = 0; i < OB_LIVE_COUNT; i++) {
     book.add_order(OB_POOL[i], 100, pool_price(i), Side::BID);
@@ -135,6 +142,8 @@ static void BM_StlOrderBook_SteadyState(benchmark::State &state) {
 BENCHMARK(BM_StlOrderBook_SteadyState);
 
 static void BM_StlOrderBook_BestPrice(benchmark::State &state) {
+  pin_to_core(0);
+
   StlOrderBook book;
   for (size_t i = 0; i < OB_LIVE_COUNT; i++) {
     book.add_order(OB_POOL[i], 100, pool_price(i), Side::BID);

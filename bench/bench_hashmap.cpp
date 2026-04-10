@@ -1,3 +1,4 @@
+#include "bench_utils.hpp"
 #include "hash_map.hpp"
 #include <benchmark/benchmark.h>
 #include <ctime>
