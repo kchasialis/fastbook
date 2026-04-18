@@ -84,35 +84,6 @@ private:
     book->cancel_order(msg.order_delete.order_ref_num);
   }
 
-  void execute_order_handler(const Message &msg) noexcept {
-    OrderBook *book = order_map_.find(msg.order_executed.order_ref_num);
-    if (book == nullptr) [[unlikely]]
-      return;
-    Order *order = book->get_order_by_oid(msg.order_executed.order_ref_num);
-    if (order == nullptr) [[unlikely]]
-      return;
-    if (order->shares == msg.order_executed.executed_shares) {
-      order_map_.erase(msg.order_executed.order_ref_num);
-    }
-    book->execute_order(msg.order_executed.order_ref_num,
-                        msg.order_executed.executed_shares);
-  }
-
-  void execute_order_priced_handler(const Message &msg) noexcept {
-    OrderBook *book = order_map_.find(msg.order_executed_price.order_ref_num);
-    if (book == nullptr) [[unlikely]]
-      return;
-    Order *order =
-        book->get_order_by_oid(msg.order_executed_price.order_ref_num);
-    if (order == nullptr) [[unlikely]]
-      return;
-    if (order->shares == msg.order_executed_price.executed_shares) {
-      order_map_.erase(msg.order_executed_price.order_ref_num);
-    }
-    book->execute_order(msg.order_executed_price.order_ref_num,
-                        msg.order_executed_price.executed_shares);
-  }
-
   void replace_order_handler(const Message &msg) noexcept {
     OrderBook *book = order_map_.find(msg.order_replace.orig_order_ref_num);
     if (book == nullptr) [[unlikely]]
@@ -127,6 +98,11 @@ private:
     book->add_order(msg.order_replace.new_order_ref_num,
                     msg.order_replace.shares, msg.order_replace.price, side);
     order_map_.insert(msg.order_replace.new_order_ref_num, book);
+
+    std::array<Fill, 16> fills;
+    engine_.match(*book, msg.order_replace.new_order_ref_num, side,
+                  msg.order_replace.price, msg.order_replace.shares,
+                  std::span<Fill>{fills});
   }
 
 public:
@@ -159,12 +135,6 @@ public:
         break;
       case MsgType::OrderDelete:
         delete_order_handler(msg);
-        break;
-      case MsgType::OrderExecuted:
-        execute_order_handler(msg);
-        break;
-      case MsgType::OrderExecutedPrice:
-        execute_order_priced_handler(msg);
         break;
       case MsgType::OrderReplace:
         replace_order_handler(msg);
