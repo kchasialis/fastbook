@@ -3,10 +3,8 @@
 #include "feed_handler.hpp"
 #include "hash_map.hpp"
 #include "itch_messages.hpp"
-#include "matching_engine.hpp"
 #include "order_book.hpp"
 #include "spsc_queue.hpp"
-#include <array>
 #include <atomic>
 #include <cassert>
 #include <memory>
@@ -15,7 +13,6 @@
 class BookBuilder {
 private:
   Queue::SPSCConsumer &consumer_;
-  MatchingEngine &engine_;
   std::atomic<bool> stop_;
   std::atomic<uint64_t> msg_count_{0};
   HashMap<uint16_t, OrderBook *> symbol_map_;
@@ -42,10 +39,6 @@ private:
     book->add_order(msg.add_order.order_ref_num, msg.add_order.shares,
                     msg.add_order.price, side);
     order_map_.insert(msg.add_order.order_ref_num, book);
-
-    std::array<Fill, 16> fills;
-    engine_.match(*book, msg.add_order.order_ref_num, side, msg.add_order.price,
-                  msg.add_order.shares, std::span<Fill>{fills});
   }
 
   void add_order_mpid_handler(const Message &msg) noexcept {
@@ -55,11 +48,6 @@ private:
     book->add_order(msg.add_order_mpid.order_ref_num, msg.add_order_mpid.shares,
                     msg.add_order_mpid.price, side);
     order_map_.insert(msg.add_order_mpid.order_ref_num, book);
-
-    std::array<Fill, 16> fills;
-    engine_.match(*book, msg.add_order_mpid.order_ref_num, side,
-                  msg.add_order_mpid.price, msg.add_order_mpid.shares,
-                  std::span<Fill>{fills});
   }
 
   void cancel_order_handler(const Message &msg) noexcept {
@@ -98,17 +86,12 @@ private:
     book->add_order(msg.order_replace.new_order_ref_num,
                     msg.order_replace.shares, msg.order_replace.price, side);
     order_map_.insert(msg.order_replace.new_order_ref_num, book);
-
-    std::array<Fill, 16> fills;
-    engine_.match(*book, msg.order_replace.new_order_ref_num, side,
-                  msg.order_replace.price, msg.order_replace.shares,
-                  std::span<Fill>{fills});
   }
 
 public:
-  BookBuilder(Queue::SPSCConsumer &consumer, MatchingEngine &engine)
-      : consumer_(consumer), engine_(engine), stop_(false),
-        symbol_map_(1 << 13), order_map_(1 << 17) {
+  BookBuilder(Queue::SPSCConsumer &consumer)
+      : consumer_(consumer), stop_(false), symbol_map_(1 << 13),
+        order_map_(1 << 17) {
     owned_books_.reserve(8192);
   }
 

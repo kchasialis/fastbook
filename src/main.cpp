@@ -1,7 +1,6 @@
 #include "book_builder.hpp"
 #include "feed_reader.hpp"
 #include "file_source.hpp"
-#include "matching_engine.hpp"
 #include "order_book.hpp"
 #include "spsc_queue.hpp"
 #include "udp_source.hpp"
@@ -64,13 +63,12 @@ int parse_args(int argc, char *argv[], Args &args) {
   return 0;
 }
 
-template <typename Source>
-Stats run(Source &src, Queue &queue, MatchingEngine &engine) {
+template <typename Source> Stats run(Source &src, Queue &queue) {
   auto producer = queue.producer();
   auto consumer = queue.consumer();
   FeedHandler<Queue> feed_handler(producer);
   FeedReader<Source> feed_reader(src, feed_handler);
-  BookBuilder book_builder(consumer, engine);
+  BookBuilder book_builder(consumer);
 
   std::thread tproducer([&] {
     feed_reader.run();
@@ -97,15 +95,14 @@ int main(int argc, char *argv[]) {
   }
 
   Queue queue;
-  MatchingEngine engine;
   Stats stats{};
 
   if (args.file) {
     FileSource src(args.file);
-    stats = run(src, queue, engine);
+    stats = run(src, queue);
   } else if (args.ip && args.mcast && args.port) {
     UDPSource src(args.ip, args.mcast, args.port);
-    stats = run(src, queue, engine);
+    stats = run(src, queue);
   } else {
     usage(argv[0]);
     return 1;
