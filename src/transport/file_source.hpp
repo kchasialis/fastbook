@@ -12,8 +12,7 @@
 #include <unistd.h>
 #include <utility>
 
-#include "fd_wrapper.hpp"
-#include "transport.hpp"
+#include "common.hpp"
 
 class FileSource {
 private:
@@ -35,16 +34,11 @@ public:
   FileSource() : start_(nullptr), length_(0) {}
   explicit FileSource(const char *fpath) : start_(nullptr), length_(0) {
     FdWrapper fd(open(fpath, O_RDONLY));
-    if (fd.val() < 0) {
-      throw std::runtime_error(
-          std::format("Failed to open fpath: {} for reading", fpath));
-    }
+
+    check(fd.val(), "open");
 
     struct stat st;
-    if (fstat(fd.val(), &st) == -1) {
-      throw std::runtime_error(std::format("Failed to stat file: {}, error: {}",
-                                           fpath, strerror(errno)));
-    }
+    check(fstat(fd.val(), &st), "fstat");
     if (st.st_size == 0) {
       return;
     }
