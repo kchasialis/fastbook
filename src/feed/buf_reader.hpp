@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <span>
@@ -43,4 +44,12 @@ public:
   std::size_t remaining() const noexcept { return buf_.size(); }
   const std::byte *data() const noexcept { return buf_.data(); }
   void set_buf(std::span<const std::byte> new_buf) { buf_ = new_buf; }
+  std::span<const std::byte> get_buf() const noexcept { return buf_; }
+  std::span<const std::byte> take_n(size_t n) noexcept {
+    assert(n <= buf_.size());
+    auto *buf_start = buf_.data();
+    buf_ = buf_.subspan(n);
+
+    return {buf_start, n};
+  }
 };

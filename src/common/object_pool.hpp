@@ -1,49 +1,58 @@
 #pragma once
 
-#include <concepts>
+#include <cstddef>
 #include <memory>
+#include <utility>
 
-template <typename T>
-concept SlabNode = requires(T t) {
-  { t.next } -> std::convertible_to<T *>;
-  { t.prev } -> std::convertible_to<T *>;
+struct NoReset {
+  template <typename T> void operator()(T &) const noexcept {}
 };
 
-template <SlabNode T> class SlabAllocator {
+// ObjectPool implemented as a stack of objects.
+template <typename T, typename Reset = NoReset> class ObjectPool {
 private:
-  std::unique_ptr<T[]> pool_;
-  T *free_list_;
+  std::unique_ptr<T[]> storage_;
+  std::unique_ptr<T *[]> free_;
+  size_t capacity_;
+  size_t n_free_;
+  [[no_unique_address]] Reset reset_;
 
 public:
-  SlabAllocator(size_t n_objects)
-      : pool_(new T[n_objects]), free_list_(pool_.get()) {
-    for (size_t i = 0; i < n_objects - 1; i++) {
-      pool_[i].next = &pool_[i + 1];
+  explicit ObjectPool(size_t n_objects, Reset reset = Reset{})
+      : storage_(n_objects > 0 ? new T[n_objects] : nullptr),
+        free_(n_objects > 0 ? new T *[n_objects] : nullptr),
+        capacity_(n_objects), n_free_(n_objects), reset_(std::move(reset)) {
+    // Hand out low indices first so early allocations stay contiguous.
+    for (size_t i = 0; i < n_objects; i++) {
+      free_[i] = &storage_[n_objects - 1 - i];
     }
-    pool_[n_objects - 1].next = nullptr;
   }
-  ~SlabAllocator() = default;
 
-  SlabAllocator(const SlabAllocator &) = delete;
-  SlabAllocator(SlabAllocator &&) = delete;
-  SlabAllocator &operator=(const SlabAllocator &) = delete;
-  SlabAllocator &operator=(SlabAllocator &&) = delete;
+  ~ObjectPool() = default;
 
-  T *allocate() noexcept {
-    if (free_list_ == nullptr) [[unlikely]] {
+  ObjectPool(const ObjectPool &) = delete;
+  ObjectPool(ObjectPool &&) = delete;
+  ObjectPool &operator=(const ObjectPool &) = delete;
+  ObjectPool &operator=(ObjectPool &&) = delete;
+
+  // Returns nullptr when exhausted.
+  T *get() noexcept {
+    if (n_free_ == 0) [[unlikely]] {
       return nullptr;
     }
 
-    auto *ret = free_list_;
-    free_list_ = free_list_->next;
-    return ret;
+    return free_[--n_free_];
   }
-  void deallocate(T *obj) noexcept {
+
+  void restore(T *obj) noexcept {
     if (obj == nullptr) [[unlikely]] {
       return;
     }
 
-    obj->next = free_list_;
-    free_list_ = obj;
+    reset_(*obj);
+    free_[n_free_++] = obj;
   }
+
+  size_t capacity() const noexcept { return capacity_; }
+  size_t available() const noexcept { return n_free_; }
 };

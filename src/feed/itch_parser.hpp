@@ -3,11 +3,12 @@
 #include "buf_reader.hpp"
 #include "mbo_event.hpp"
 #include <array>
+#include <cassert>
 #include <span>
 
 template <class S>
 concept EventSink = requires(S s, const MboEvent &e) {
-  { s.on_event(e) } -> std::same_as<bool>;
+  { s.on_event(e) } -> std::same_as<void>;
 };
 
 class ITCHParser {
@@ -102,33 +103,6 @@ private:
       OrderDelete order_delete;
       OrderReplace order_replace;
     };
-
-    std::span<MboEvent> to_mbo_events() const noexcept {
-      switch (type) {
-      case MsgType::AddOrder: {
-        MboEvent mboe;
-        return {{mboe}};
-      }
-      case MsgType::AddOrderMPID: {
-        break;
-      }
-      case MsgType::OrderExecuted: {
-        break;
-      }
-      case MsgType::OrderExecutedPrice: {
-        break;
-      }
-      case MsgType::OrderCancel: {
-        break;
-      }
-      case MsgType::OrderReplace: {
-        MboEvent mboe1, mboe2;
-        return {{mboe1, mboe2}};
-      }
-      default:
-        return {};
-      }
-    }
   };
 
   static ItchMessage parse_msg(BufReader &reader) noexcept {
@@ -255,19 +229,98 @@ private:
   }
 
   static inline MboEvent
-  create_mbo_from_add_order(const ItchMessage &msg) noexcept {}
+  create_mbo_from_add_order(const ItchMessage &msg) noexcept {
+    assert(msg.type == MsgType::AddOrder);
+    assert(msg.add_order.side == 'B' || msg.add_order.side == 'S');
+
+    return MboEvent{.etype = EventType::ADDED,
+                    .side = msg.add_order.side == 'B' ? Side::BID : Side::ASK,
+                    .printable = true,
+                    .instrument = msg.add_order.stock_locate,
+                    .timestamp = msg.add_order.timestamp,
+                    .oid = msg.add_order.order_ref_num,
+                    .price = msg.add_order.price,
+                    .qty = msg.add_order.shares};
+  }
+
   static inline MboEvent
-  create_mbo_from_add_order_mpid(const ItchMessage &msg) noexcept {}
+  create_mbo_from_add_order_mpid(const ItchMessage &msg) noexcept {
+    assert(msg.type == MsgType::AddOrderMPID);
+
+    return MboEvent{.etype = EventType::ADDED,
+                    .side =
+                        msg.add_order_mpid.side == 'B' ? Side::BID : Side::ASK,
+                    .printable = true,
+                    .instrument = msg.add_order_mpid.stock_locate,
+                    .timestamp = msg.add_order_mpid.timestamp,
+                    .oid = msg.add_order_mpid.order_ref_num,
+                    .price = msg.add_order_mpid.price,
+                    .qty = msg.add_order_mpid.shares};
+  }
+
   static inline MboEvent
-  create_mbo_from_order_exec(const ItchMessage &msg) noexcept {}
+  create_mbo_from_order_exec(const ItchMessage &msg) noexcept {
+    assert(msg.type == MsgType::OrderExecuted);
+
+    return MboEvent{.etype = EventType::EXECUTED,
+                    .printable = true,
+                    .instrument = msg.order_executed.stock_locate,
+                    .timestamp = msg.order_executed.timestamp,
+                    .oid = msg.order_executed.order_ref_num,
+                    .qty = msg.order_executed.executed_shares};
+  }
+
   static inline MboEvent
-  create_mbo_from_order_exec_price(const ItchMessage &msg) noexcept {}
+  create_mbo_from_order_exec_price(const ItchMessage &msg) noexcept {
+    assert(msg.type == MsgType::OrderExecutedPrice);
+
+    return MboEvent{.etype = EventType::EXECUTED,
+                    .printable = msg.order_executed_price.printable == 'Y',
+                    .instrument = msg.order_executed_price.stock_locate,
+                    .timestamp = msg.order_executed_price.timestamp,
+                    .oid = msg.order_executed_price.order_ref_num,
+                    .price = msg.order_executed_price.execution_price,
+                    .qty = msg.order_executed_price.executed_shares};
+  }
+
   static inline MboEvent
-  create_mbo_from_order_cancel(const ItchMessage &msg) noexcept {}
+  create_mbo_from_order_cancel(const ItchMessage &msg) noexcept {
+    assert(msg.type == MsgType::OrderCancel);
+
+    return MboEvent{.etype = EventType::CANCELLED,
+                    .printable = true,
+                    .instrument = msg.order_cancel.stock_locate,
+                    .timestamp = msg.order_cancel.timestamp,
+                    .oid = msg.order_cancel.order_ref_num,
+                    .qty = msg.order_cancel.cancelled_shares};
+  }
+
   static inline MboEvent
-  create_mbo_from_order_delete(const ItchMessage &msg) noexcept {}
-  static inline std::array<MboEvent, 2>
-  create_mbo_from_order_replace(const ItchMessage &msg) noexcept {}
+  create_mbo_from_order_delete(const ItchMessage &msg) noexcept {
+    assert(msg.type == MsgType::OrderDelete);
+
+    return MboEvent{
+        .etype = EventType::DELETED,
+        .printable = true,
+        .instrument = msg.order_delete.stock_locate,
+        .timestamp = msg.order_delete.timestamp,
+        .oid = msg.order_delete.order_ref_num,
+    };
+  }
+
+  static inline MboEvent
+  create_mbo_from_order_replace(const ItchMessage &msg) noexcept {
+    assert(msg.type == MsgType::OrderReplace);
+
+    return MboEvent{.etype = EventType::REPLACED,
+                    .printable = true,
+                    .instrument = msg.order_replace.stock_locate,
+                    .timestamp = msg.order_replace.timestamp,
+                    .oid = msg.order_replace.new_order_ref_num,
+                    .orig_oid = msg.order_replace.orig_order_ref_num,
+                    .price = msg.order_replace.price,
+                    .qty = msg.order_replace.shares};
+  }
 
 public:
   template <EventSink Sink>
@@ -295,9 +348,7 @@ public:
       sink.on_event(create_mbo_from_order_delete(msg));
       break;
     case MsgType::OrderReplace:
-      auto arr = create_mbo_from_order_replace(msg);
-      sink.on_event(arr[0]);
-      sink.on_event(arr[1]);
+      sink.on_event(create_mbo_from_order_replace(msg));
       break;
     default:
       break;

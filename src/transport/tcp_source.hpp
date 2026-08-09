@@ -1,7 +1,9 @@
 #pragma once
 
-#include "common.hpp"
+#include "fd_wrapper.hpp"
 #include "object_pool.hpp"
+#include "transport.hpp"
+#include "utils.hpp"
 #include <arpa/inet.h>
 #include <cstring>
 #include <liburing.h>
@@ -21,15 +23,24 @@ private:
     std::byte buf[IO_URING_BUF_MAX_SZ];
     size_t sz;
     int rc;
+
+    struct Reset {
+      static void operator()(io_uring_data_t &obj) noexcept {
+        obj.sz = 0;
+        obj.rc = 0;
+      }
+    };
   };
+
+  using PoolType = ObjectPool<io_uring_data_t, io_uring_data_t::Reset>;
 
   // RAII for restore.
   class PoolEntry {
-    ObjectPool<io_uring_data_t> *pool_;
+    PoolType *pool_;
     io_uring_data_t *data_;
 
   public:
-    PoolEntry(ObjectPool<io_uring_data_t> *pool, io_uring_data_t *data) noexcept
+    PoolEntry(PoolType *pool, io_uring_data_t *data) noexcept
         : pool_(pool), data_(data) {}
     ~PoolEntry() {
       if (data_) {
@@ -52,7 +63,7 @@ private:
 
   FdWrapper sockfd_;
   struct io_uring ring_;
-  ObjectPool<io_uring_data_t> pool_;
+  PoolType pool_;
 
   std::optional<Status> conn_status_;
   bool recv_armed_{false};
@@ -99,9 +110,11 @@ private:
 public:
   static constexpr bool messages_may_straddle = true;
   static constexpr uint32_t RING_MAX_ENTRIES = 1024;
+  // One recv in flight at a time plus room for queued sends.
+  static constexpr uint32_t POOL_SIZE = 256;
 
   TcpSource(const char *ip, uint16_t port)
-      : sockfd_(socket(AF_INET, SOCK_STREAM, 0)) {
+      : sockfd_(socket(AF_INET, SOCK_STREAM, 0)), pool_(POOL_SIZE) {
     check(sockfd_.val(), "socket()");
 
     struct sockaddr_in addr;

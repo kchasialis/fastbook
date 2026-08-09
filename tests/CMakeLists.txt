@@ -4,6 +4,7 @@ target_link_libraries(fastbook_tests
         PRIVATE fastbook_options
         PRIVATE spsc
         PRIVATE orderbook
+        PRIVATE common
         PRIVATE feed
         PRIVATE GTest::gtest_main
 )

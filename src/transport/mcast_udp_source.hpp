@@ -7,12 +7,19 @@
 #include <format>
 #include <iostream>
 #include <netinet/in.h>
+#include <optional>
+#include <source_location>
+#include <span>
 #include <stdexcept>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <utility>
 
-#include "common.hpp"
+#include "fd_wrapper.hpp"
+#include "object_pool.hpp"
+#include "transport.hpp"
+#include "utils.hpp"
 
 class McastUDPSource {
 public:
@@ -22,25 +29,95 @@ public:
   static constexpr bool messages_may_straddle = false;
 
 private:
-  FdWrapper sockfd_;
-  size_t msgs_received_;
-  size_t next_msg_;
-  std::byte bufs_[VLEN][MSG_BUF_SZ];
-  struct iovec iovecs_[VLEN];
-  struct mmsghdr msgs_[VLEN];
+  struct Datagram {
+    std::byte buf[MSG_BUF_SZ];
+    size_t sz;
+
+    struct Reset {
+      static void operator()(Datagram &d) noexcept { d.sz = 0; }
+    };
+  };
+
+  using PoolType = ObjectPool<Datagram, Datagram::Reset>;
 
 public:
   class Buffer {
-    std::span<const std::byte> bytes_;
+    PoolType *pool_;
+    Datagram *dgram_;
 
   public:
-    explicit Buffer(std::span<const std::byte> bytes) : bytes_(bytes) {}
-    std::span<const std::byte> bytes() const noexcept { return bytes_; }
+    Buffer(PoolType *pool, Datagram *dgram) noexcept
+        : pool_(pool), dgram_(dgram) {}
+    ~Buffer() {
+      if (dgram_) {
+        pool_->restore(dgram_);
+      }
+    }
+
+    Buffer(const Buffer &) = delete;
+    Buffer(Buffer &&other) noexcept
+        : pool_(other.pool_), dgram_(std::exchange(other.dgram_, nullptr)) {}
+    Buffer &operator=(const Buffer &) = delete;
+    Buffer &operator=(Buffer &&rhs) noexcept {
+      std::swap(pool_, rhs.pool_);
+      std::swap(dgram_, rhs.dgram_);
+      return *this;
+    }
+
+    std::span<const std::byte> bytes() const noexcept {
+      return std::span<const std::byte>(dgram_->buf, dgram_->sz);
+    }
   };
+
+private:
+  FdWrapper sockfd_;
+  size_t msgs_received_;
+  size_t next_msg_;
+  struct iovec iovecs_[VLEN];
+  struct mmsghdr msgs_[VLEN]{};
+  Datagram *batch_[VLEN];
+  PoolType pool_;
+
+  std::optional<uint32_t> refill_() noexcept {
+    uint32_t k = 0;
+    while (k < VLEN) {
+      Datagram *d = pool_.get();
+      if (!d) {
+        break;
+      }
+      batch_[k] = d;
+      iovecs_[k].iov_base = d->buf;
+      iovecs_[k].iov_len = MSG_BUF_SZ;
+      msgs_[k].msg_hdr.msg_iov = &iovecs_[k];
+      msgs_[k].msg_hdr.msg_iovlen = 1;
+      ++k;
+    }
+
+    if (k == 0) [[unlikely]] {
+      return std::nullopt;
+    }
+    return k;
+  }
+
+  void release_range_(uint32_t from, uint32_t to) noexcept {
+    for (uint32_t j = from; j < to; ++j) {
+      pool_.restore(batch_[j]);
+    }
+  }
+
+  Buffer serve_() noexcept {
+    Datagram *d = batch_[next_msg_];
+    d->sz = msgs_[next_msg_].msg_len;
+    ++next_msg_;
+    return Buffer{&pool_, d};
+  }
+
+public:
+  static constexpr uint32_t POOL_SIZE = 4 * VLEN;
 
   McastUDPSource(const char *ip, const char *mcast_ip, uint16_t port)
       : sockfd_(socket(AF_INET, SOCK_DGRAM, 0)), msgs_received_(0),
-        next_msg_(0) {
+        next_msg_(0), pool_(POOL_SIZE) {
 
     check(sockfd_.val(), "socket()");
 
@@ -93,14 +170,6 @@ public:
     auto sz = static_cast<socklen_t>(sizeof(mreq));
     check(setsockopt(sockfd_.val(), IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sz),
           "setsockopt()");
-
-    memset(msgs_, 0, sizeof(msgs_));
-    for (uint32_t i = 0; i < VLEN; i++) {
-      iovecs_[i].iov_base = bufs_[i];
-      iovecs_[i].iov_len = MSG_BUF_SZ;
-      msgs_[i].msg_hdr.msg_iov = &iovecs_[i];
-      msgs_[i].msg_hdr.msg_iovlen = 1;
-    }
   }
 
   ~McastUDPSource() = default;
@@ -113,17 +182,22 @@ public:
 
   std::expected<McastUDPSource::Buffer, Status> next() noexcept {
     if (next_msg_ < msgs_received_) {
-      std::span<const std::byte> s(bufs_[next_msg_], msgs_[next_msg_].msg_len);
-      next_msg_++;
-      return Buffer{s};
+      return serve_();
     }
 
-    int nrecv = recvmmsg(sockfd_.val(), msgs_, VLEN, MSG_DONTWAIT, NULL);
-    if (nrecv == 0 ||
-        (nrecv == -1 &&
-         (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))) {
+    auto claimed = refill_();
+    if (!claimed.has_value()) [[unlikely]] {
       return std::unexpected(Status::WouldBlock);
-    } else if (nrecv == -1) {
+    }
+    const uint32_t k = claimed.value();
+
+    int nrecv = recvmmsg(sockfd_.val(), msgs_, k, MSG_DONTWAIT, NULL);
+    if (nrecv <= 0) [[unlikely]] {
+      release_range_(0, k);
+      if (nrecv == 0 || errno == EAGAIN || errno == EWOULDBLOCK ||
+          errno == EINTR) {
+        return std::unexpected(Status::WouldBlock);
+      }
       std::source_location loc = std::source_location::current();
       std::cerr << "[DEBUG] "
                 << std::format("recvmmsg failed at {}: {}", loc.file_name(),
@@ -131,12 +205,12 @@ public:
       return std::unexpected(Status::Error);
     }
 
-    msgs_received_ = nrecv;
+    release_range_(static_cast<uint32_t>(nrecv), k);
+
+    msgs_received_ = static_cast<size_t>(nrecv);
     next_msg_ = 0;
 
-    std::span<const std::byte> s(bufs_[next_msg_], msgs_[next_msg_].msg_len);
-    next_msg_++;
-    return Buffer{s};
+    return serve_();
   }
 };
 

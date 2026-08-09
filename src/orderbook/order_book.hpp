@@ -1,13 +1,12 @@
 #pragma once
 
 #include "hash_map.hpp"
-#include "slab_allocator.hpp"
+#include "object_pool.hpp"
+#include "side.hpp"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-
-enum class Side : uint8_t { BID, ASK };
 
 struct Order {
   uint64_t order_num;
@@ -38,7 +37,7 @@ private:
   uint32_t window_size_;
   uint32_t best_bid_slot_;
   uint32_t best_ask_slot_;
-  SlabAllocator<Order> allocator_;
+  ObjectPool<Order> allocator_;
   HashMap<order_id_t, Order *> orders_;
 
   bool add_to_price_queue(Order *order) noexcept {
@@ -176,7 +175,7 @@ public:
       return false;
     }
 
-    Order *new_order = allocator_.allocate();
+    Order *new_order = allocator_.get();
     if (new_order == nullptr) [[unlikely]] {
       return false;
     }
@@ -189,7 +188,7 @@ public:
     new_order->prev = nullptr;
 
     if (!add_to_price_queue(new_order)) {
-      allocator_.deallocate(new_order);
+      allocator_.restore(new_order);
       return false;
     }
 
@@ -210,7 +209,7 @@ public:
 
     assert(orders_.erase(oid));
 
-    allocator_.deallocate(order);
+    allocator_.restore(order);
     return true;
   }
 
