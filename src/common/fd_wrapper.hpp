@@ -23,6 +23,13 @@ public:
     std::swap(this->fd_, rhs.fd_);
     return *this;
   }
+  FdWrapper &operator=(int fd) noexcept {
+    if (fd_ >= 0) {
+      close(fd_);
+    }
+    this->fd_ = fd;
+    return *this;
+  }
 
   int val() const noexcept { return fd_; }
   int release() noexcept {

@@ -5,6 +5,8 @@
 #include "transport.hpp"
 #include "utils.hpp"
 #include <arpa/inet.h>
+#include <atomic>
+#include <cerrno>
 #include <cstring>
 #include <liburing.h>
 #include <netinet/in.h>
@@ -18,17 +20,11 @@ class TcpSource {
 private:
   struct io_uring_data_t {
     static constexpr uint32_t IO_URING_BUF_MAX_SZ = 4096;
-
-    enum class DataType : uint8_t { SEND, RECV } data_type;
     std::byte buf[IO_URING_BUF_MAX_SZ];
     size_t sz;
-    int rc;
 
     struct Reset {
-      static void operator()(io_uring_data_t &obj) noexcept {
-        obj.sz = 0;
-        obj.rc = 0;
-      }
+      static void operator()(io_uring_data_t &obj) noexcept { obj.sz = 0; }
     };
   };
 
@@ -62,10 +58,11 @@ private:
   };
 
   FdWrapper sockfd_;
+  FdWrapper sendfd_;
   struct io_uring ring_;
   PoolType pool_;
 
-  std::optional<Status> conn_status_;
+  std::atomic<Status> conn_status_;
   bool recv_armed_{false};
 
   static constexpr bool is_terminal(Status s) noexcept {
@@ -89,32 +86,46 @@ public:
   };
 
 private:
-  void rearm_recv_() {
-    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
-    if (sqe == nullptr) [[unlikely]] {
-      return;
-    }
+  std::unexpected<Status> fail_(Status err) noexcept {
+    shutdown(sockfd_.val(), SHUT_RDWR);
+    conn_status_.store(err, std::memory_order_relaxed);
+    return std::unexpected(err);
+  }
 
+  bool rearm_recv_() noexcept {
     io_uring_data_t *data = pool_.get();
     if (!data) [[unlikely]] {
-      return;
+      return false;
     }
-    data->data_type = io_uring_data_t::DataType::RECV;
+
+    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
+    if (sqe == nullptr) [[unlikely]] {
+      pool_.restore(data);
+      return false;
+    }
+
     io_uring_prep_recv(sqe, sockfd_.val(), data->buf,
                        io_uring_data_t::IO_URING_BUF_MAX_SZ, 0);
     io_uring_sqe_set_data(sqe, data);
-    io_uring_submit(&ring_);
+    if (io_uring_submit(&ring_) <= 0) [[unlikely]] {
+      pool_.restore(data);
+      fail_(Status::Error);
+      return false;
+    }
     recv_armed_ = true;
+
+    return true;
   }
 
 public:
   static constexpr bool messages_may_straddle = true;
   static constexpr uint32_t RING_MAX_ENTRIES = 1024;
-  // One recv in flight at a time plus room for queued sends.
-  static constexpr uint32_t POOL_SIZE = 256;
+  // One recv in flight. 16 should be more than enough
+  static constexpr uint32_t POOL_SIZE = 16;
 
   TcpSource(const char *ip, uint16_t port)
-      : sockfd_(socket(AF_INET, SOCK_STREAM, 0)), pool_(POOL_SIZE) {
+      : sockfd_(socket(AF_INET, SOCK_STREAM, 0)), pool_(POOL_SIZE),
+        conn_status_(Status::WouldBlock) {
     check(sockfd_.val(), "socket()");
 
     struct sockaddr_in addr;
@@ -132,6 +143,8 @@ public:
                   static_cast<socklen_t>(sizeof(addr))),
           "connect()");
 
+    sendfd_ = check(dup(sockfd_.val()), "dup()");
+
     struct io_uring_params params{};
     params.flags = IORING_SETUP_SQPOLL;
     params.sq_thread_idle = 2000;
@@ -139,112 +152,80 @@ public:
     check(io_uring_queue_init_params(RING_MAX_ENTRIES, &ring_, &params),
           "io_uring_queue_init_params()");
 
-    rearm_recv_();
+    (void)rearm_recv_();
   }
 
-  ~TcpSource() { io_uring_queue_exit(&ring_); }
+  ~TcpSource() {
+    shutdown(sockfd_.val(), SHUT_RDWR);
+    if (recv_armed_) {
+      struct io_uring_cqe *cqe;
+      io_uring_wait_cqe(&ring_, &cqe);
+    }
+    io_uring_queue_exit(&ring_);
+  }
 
   std::expected<Buffer, Status> next() noexcept {
-    if (conn_status_) [[unlikely]] {
-      // Terminal status already observed; the socket never recovers.
-      return std::unexpected(*conn_status_);
+    const Status s = conn_status_.load(std::memory_order_relaxed);
+    if (is_terminal(s)) [[unlikely]] {
+      return std::unexpected(s);
     }
 
     if (!recv_armed_) [[unlikely]] {
-      rearm_recv_();
+      if (!rearm_recv_()) {
+        return std::unexpected(conn_status_.load(std::memory_order_relaxed));
+      }
     }
 
     struct io_uring_cqe *cqe;
-    uint32_t head, count = 0;
-    Status err = Status::WouldBlock;
-    std::optional<Buffer> received;
-
-    io_uring_for_each_cqe(&ring_, head, cqe) {
-      ++count;
-      PoolEntry entry(
-          &pool_, static_cast<io_uring_data_t *>(io_uring_cqe_get_data(cqe)));
-      io_uring_data_t *data = entry.get();
-
-      switch (data->data_type) {
-      case io_uring_data_t::DataType::SEND: {
-        if (cqe->res < 0) [[unlikely]] {
-          err = cqe->res == -EAGAIN ? Status::WouldBlock : Status::Error;
-          goto done;
-        }
-        if (static_cast<size_t>(cqe->res) < data->sz) [[unlikely]] {
-          // MSG_WAITALL should prevent this. If it happens, a partial packet is
-          // on the wire and the session can no longer be trusted.
-          err = Status::Error;
-          goto done;
-        }
-        break;
-      }
-      case io_uring_data_t::DataType::RECV: {
-        recv_armed_ = false;
-
-        if (cqe->res < 0) {
-          err = cqe->res == -EAGAIN ? Status::WouldBlock : Status::Error;
-          goto done;
-        }
-        if (cqe->res == 0) [[unlikely]] {
-          // Connection closed by the peer.
-          err = Status::Eof;
-          goto done;
-        }
-
-        data->sz = static_cast<size_t>(cqe->res);
-        received.emplace(std::move(entry));
-        rearm_recv_();
-        goto done;
-      }
-      default:
-        err = Status::Error;
-        goto done;
-      }
+    if (io_uring_peek_cqe(&ring_, &cqe) < 0) {
+      return std::unexpected(Status::WouldBlock);
     }
 
-  done:
-    if (is_terminal(err)) {
-      conn_status_ = err;
+    const int res = cqe->res;
+    auto *data = static_cast<io_uring_data_t *>(io_uring_cqe_get_data(cqe));
+    io_uring_cqe_seen(&ring_, cqe);
+
+    PoolEntry entry(&pool_, data);
+    recv_armed_ = false;
+
+    if (res < 0) [[unlikely]] {
+      if (res == -EAGAIN || res == -EINTR) {
+        return std::unexpected(Status::WouldBlock);
+      }
+      return fail_(Status::Error);
+    }
+    if (res == 0) [[unlikely]] {
+      // Connection closed by the peer, or shutdown() was called.
+      return fail_(Status::Eof);
     }
 
-    io_uring_cq_advance(&ring_, count);
+    data->sz = static_cast<size_t>(res);
+    Buffer buf(std::move(entry));
+    rearm_recv_();
 
-    if (received) {
-      return std::move(*received);
-    }
-
-    return std::unexpected(err);
+    return buf;
   }
 
   std::expected<void, Status> send(std::span<const std::byte> d) noexcept {
-    if (conn_status_) [[unlikely]] {
+    const Status s = conn_status_.load(std::memory_order_relaxed);
+    if (is_terminal(s)) [[unlikely]] {
       // Terminal status already observed; the socket never recovers.
-      return std::unexpected(*conn_status_);
+      return std::unexpected(s);
     }
 
-    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
-    if (sqe == nullptr) [[unlikely]] {
-      return std::unexpected(Status::WouldBlock);
-    }
+    // Blocking, so it writes the whole payload or fails. MSG_NOSIGNAL keeps a
+    // dead peer an EPIPE instead of a SIGPIPE.
+    ssize_t ret;
+    do {
+      ret = ::send(sendfd_.val(), d.data(), d.size(), MSG_NOSIGNAL);
+    } while (ret < 0 && errno == EINTR);
 
-    io_uring_data_t *data = pool_.get();
-    if (data == nullptr) [[unlikely]] {
-      return std::unexpected(Status::WouldBlock);
+    if (ret < 0) [[unlikely]] {
+      return fail_(Status::Error);
     }
-    data->data_type = io_uring_data_t::DataType::SEND;
-
-    if (d.size() > io_uring_data_t::IO_URING_BUF_MAX_SZ) [[unlikely]] {
-      pool_.restore(data);
-      return std::unexpected(Status::Error);
+    if (static_cast<size_t>(ret) != d.size()) [[unlikely]] {
+      return fail_(Status::Error);
     }
-    std::memcpy(data->buf, d.data(), d.size());
-    data->sz = d.size();
-
-    io_uring_prep_send(sqe, sockfd_.val(), data->buf, data->sz,
-                       MSG_WAITALL | MSG_NOSIGNAL);
-    io_uring_sqe_set_data(sqe, data);
-    io_uring_submit(&ring_);
 
     return {};
   }
