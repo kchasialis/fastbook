@@ -185,7 +185,7 @@ public:
     auto *data = static_cast<io_uring_data_t *>(io_uring_cqe_get_data(cqe));
     io_uring_cqe_seen(&ring_, cqe);
 
-    PoolEntry entry(&pool_, data);
+    PoolEntry entry(&pool_, data); // Need to wrap here for RAII.
     recv_armed_ = false;
 
     if (res < 0) [[unlikely]] {

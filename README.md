@@ -132,11 +132,14 @@ Open addressing keeps keys and values in a contiguous array — one cache line p
 fastbook/
 ├── src/
 │   ├── main.cpp
-│   ├── spsc/
-│   │   └── spsc_queue.hpp
-│   ├── orderbook/
+│   ├── common/
+│   │   ├── spsc_queue.hpp
 │   │   ├── hash_map.hpp
-│   │   ├── slab_allocator.hpp
+│   │   ├── object_pool.hpp
+│   │   ├── fd_wrapper.hpp
+│   │   ├── side.hpp
+│   │   └── utils.hpp
+│   ├── orderbook/
 │   │   └── order_book.hpp
 │   ├── feed/
 │   │   ├── itch_messages.hpp

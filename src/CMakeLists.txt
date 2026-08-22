@@ -1,5 +1,4 @@
 add_subdirectory(common)
-add_subdirectory(spsc)
 add_subdirectory(feed)
 add_subdirectory(orderbook)
 add_subdirectory(bookbuilder)

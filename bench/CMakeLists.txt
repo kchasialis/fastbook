@@ -6,7 +6,7 @@ add_executable(fastbook_bench
 
 target_link_libraries(fastbook_bench
     PRIVATE fastbook_options
-    PRIVATE spsc
+    PRIVATE common
     PRIVATE orderbook
     PRIVATE benchmark::benchmark_main
 )

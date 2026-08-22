@@ -6,6 +6,5 @@ target_include_directories(feed INTERFACE
 
 target_link_libraries(feed
         INTERFACE fastbook_options
-        INTERFACE spsc
         INTERFACE common
 )

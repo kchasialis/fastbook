@@ -6,6 +6,6 @@ target_include_directories(feedreader INTERFACE
 
 target_link_libraries(feedreader
     INTERFACE fastbook_options
-    INTERFACE spsc
+    INTERFACE common
     INTERFACE feed
 )
