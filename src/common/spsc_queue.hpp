@@ -5,18 +5,18 @@
 #include <new>
 #include <optional>
 
-constexpr std::size_t CACHE_LINE_SIZE =
-    std::hardware_destructive_interference_size;
-
 template <typename T, size_t N>
-requires std::is_nothrow_move_constructible_v<T> class SPSCQueue {
+  requires std::is_nothrow_move_constructible_v<T>
+class SPSCQueue {
 private:
   static_assert(N > 0, "Queue size must be greater than 0");
   static_assert((N & (N - 1)) == 0, "Queue size must be a power of 2");
 
   alignas(T) std::byte buffer_[N * sizeof(T)];
-  alignas(CACHE_LINE_SIZE) std::atomic<size_t> head_;
-  alignas(CACHE_LINE_SIZE) std::atomic<size_t> tail_;
+  alignas(
+      std::hardware_destructive_interference_size) std::atomic<size_t> head_;
+  alignas(
+      std::hardware_destructive_interference_size) std::atomic<size_t> tail_;
 
   bool empty() const noexcept {
     return head_.load(std::memory_order_acquire) ==

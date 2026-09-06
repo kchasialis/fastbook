@@ -14,7 +14,7 @@ enum class FramingError : uint8_t { MalformedLength };
 
 template <class S>
 concept MessageSink =
-    requires(S s, std::span<const std::byte> &b, FramingError e) {
+    requires(S s, std::span<const std::byte> b, FramingError e) {
       { s.on_message(b) } -> std::same_as<void>;
       { s.on_error(e) } -> std::same_as<void>;
     };
@@ -26,7 +26,7 @@ template <bool, size_t MaxFrame> struct Reassembly {
 
 template <size_t MaxFrame> struct Reassembly<false, MaxFrame> {};
 
-template <bool MayStraddle, size_t MaxPayload> class BinaryFileFramer {
+template <bool MayStraddle, size_t MaxPayload> class LengthPrefixFramer {
 private:
   static constexpr size_t MAX_FRAME_SIZE = MaxPayload + sizeof(uint16_t);
 

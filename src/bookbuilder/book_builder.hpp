@@ -15,7 +15,7 @@ private:
   Queue::SPSCConsumer &consumer_;
   std::atomic<bool> stop_;
   std::atomic<uint64_t> msg_count_{0};
-  HashMap<uint16_t, OrderBook *> symbol_map_;
+  HashMap<instrument_t, OrderBook *> symbol_map_;
   HashMap<uint64_t, OrderBook *> order_map_;
   std::vector<std::unique_ptr<OrderBook>> owned_books_;
 
@@ -129,6 +129,7 @@ public:
   }
 
   void stop() { stop_.store(true, std::memory_order_release); }
+
   uint64_t message_count() const {
     return msg_count_.load(std::memory_order_relaxed);
   }
