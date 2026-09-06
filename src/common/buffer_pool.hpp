@@ -2,12 +2,14 @@
 
 #include "treiber_stack.hpp"
 #include "utils.hpp"
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <utility>
 
@@ -106,9 +108,12 @@ inline std::pair<Chunk *, uint8_t> base_cls_from_ptr(void *ptr) noexcept {
   return {cnk, cnk->run_class[run]};
 }
 
+inline void thread_init();
+inline bool thread_is_init();
+
 class TLMagazine {
 private:
-  static constexpr uint32_t BATCH_SIZE = 16;
+  static constexpr size_t BATCH_SIZE = 16;
   static constexpr uint32_t N_BATCHES = 64;
   static constexpr uint32_t CACHE_SIZE = BATCH_SIZE * N_BATCHES;
 
@@ -119,12 +124,66 @@ private:
 
   std::array<ClassState, N_CLASSES> classes_{};
 
+  void donate_batch(uint8_t cls) noexcept {
+    auto &state = classes_[cls];
+
+    // we are certain that we have at least BATCH_SIZE elements because this
+    // is called when the stack is full (a multiple of BATCH_SIZE)
+    assert(state.top_ >= BATCH_SIZE);
+
+    Block *head = state.stk_[--state.top_];
+    Block *current = head;
+    for (size_t i = 0; i < BATCH_SIZE - 1; i++) {
+      current->next = state.stk_[--state.top_];
+      current = current->next;
+    }
+    current->next = nullptr;
+
+    g_classes[cls].push_chain(head, current);
+  }
+
+  void refill_from_chain(size_t cls, Block *head, Block *tail) noexcept {
+    auto &state = classes_[cls];
+    while (head && state.top_ < state.stk_.size()) {
+      state.stk_[state.top_++] = head;
+      head = head->next;
+    }
+
+    if (head) {
+      g_classes[cls].push_chain(head, tail);
+    }
+  }
+
+  void donate_all() noexcept {
+    for (size_t cls = 0; cls < N_CLASSES; cls++) {
+      auto &state = classes_[cls];
+      if (state.top_ > 0) {
+        Block *head = state.stk_[--state.top_];
+        Block *current = head;
+        size_t iter = state.top_;
+        for (size_t i = 0; i < iter; i++) {
+          current->next = state.stk_[--state.top_];
+          current = current->next;
+        }
+        current->next = nullptr;
+
+        g_classes[cls].push_chain(head, current);
+      }
+    }
+  }
+
+  bool is_full(uint8_t cls) const noexcept {
+    auto &state = classes_[cls];
+    return state.top_ >= state.stk_.size();
+  }
+
   bool take_batch(uint8_t cls) noexcept {
     auto &state = classes_[cls];
     Block *head = g_classes[cls].take_all();
     bool found = head != nullptr;
     Block *tail = head;
-    for (size_t i = 0; i < BATCH_SIZE && head; i++) {
+    size_t batch_size = std::min(BATCH_SIZE, state.stk_.size() - state.top_);
+    for (size_t i = 0; i < batch_size && head; i++) {
       state.stk_[state.top_++] = head;
       head = head->next;
       tail = head;
@@ -144,28 +203,13 @@ private:
     return found;
   }
 
-  void donate_batch(uint8_t cls) noexcept {
-    auto &state = classes_[cls];
-
-    // we are certain that we have at least BATCH_SIZE elements because this
-    // is called when the stack is full (a multiple of BATCH_SIZE)
-    assert(state.top_ >= BATCH_SIZE);
-
-    Block *head = state.stk_[--state.top_];
-    Block *current = head;
-    for (uint32_t i = 0; i < BATCH_SIZE - 1; i++) {
-      current->next = state.stk_[--state.top_];
-      current = current->next;
-    }
-    current->next = nullptr;
-
-    g_classes[cls].push_chain(head, current);
-  }
-
 public:
   Block *pop(uint8_t cls) noexcept {
     auto &state = classes_[cls];
     if (state.top_ == 0) {
+      if (!thread_is_init()) {
+        thread_init();
+      }
       if (!take_batch(cls)) {
         return nullptr;
       }
@@ -183,20 +227,38 @@ public:
     state.stk_[state.top_++] = blk;
   }
 
-  void refill_from_chain(size_t cls, Block *head, Block *tail) noexcept {
-    auto &state = classes_[cls];
-    while (head && state.top_ < state.stk_.size()) {
-      state.stk_[state.top_++] = head;
-      head = head->next;
-    }
-
-    if (head) {
-      g_classes[cls].push_chain(head, tail);
-    }
-  }
+  friend class BufferPool;
+  friend void flush_magazine(void *);
 };
 
 inline thread_local TLMagazine magazine = {};
+
+inline void flush_magazine(void *args) {
+  TLMagazine *mag = reinterpret_cast<TLMagazine *>(args);
+  mag->donate_all();
+}
+
+inline pthread_key_t get_pthread_key() {
+  static pthread_key_t key = [] {
+    pthread_key_t k;
+    pthread_key_create(&k, flush_magazine);
+    return k;
+  }();
+
+  return key;
+}
+
+inline void thread_init() {
+  pthread_key_t key = get_pthread_key();
+  void *p = pthread_getspecific(key);
+  if (!p) {
+    pthread_setspecific(key, &magazine);
+  }
+}
+
+inline bool thread_is_init() {
+  return pthread_getspecific(get_pthread_key()) != nullptr;
+}
 
 class BufferPool {
 
@@ -332,5 +394,23 @@ private:
     }
 
     magazine.push(reinterpret_cast<Block *>(ptr), p.second);
+  }
+
+  /* Refills the magazines to the full for this specific size-class. */
+  bool reserve(size_t sz) noexcept {
+    if (!thread_is_init()) {
+      thread_init();
+    }
+
+    size_t cls = class_of(sz);
+    while (!magazine.is_full(cls)) {
+      if (!magazine.take_batch(cls)) {
+        if (!refill(cls)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
   }
 };
