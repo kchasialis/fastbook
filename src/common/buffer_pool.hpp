@@ -360,6 +360,7 @@ private:
     return true;
   }
 
+public:
   void *alloc(size_t sz) noexcept {
     if (sz > MAX_CLASS_SIZE) [[unlikely]] {
       size_t alloc_size = round_to_cnk_sz(sz + sizeof(Chunk));
