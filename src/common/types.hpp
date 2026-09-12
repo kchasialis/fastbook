@@ -1,14 +1,15 @@
 #pragma once
 
-#include "side.hpp"
 #include <cstdint>
 
 using instrument_t = uint32_t;
 using timestamp_t = uint64_t;
 using oid_t = uint64_t;
 
+enum class Side : uint8_t { BID, ASK };
+
 enum class EventType : uint8_t {
-  ADDED,
+  ADDED = 0,
   EXECUTED,
   REPLACED,
   CANCELLED,

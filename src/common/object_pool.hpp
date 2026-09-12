@@ -1,7 +1,13 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
+#include <cstdint>
+#include <iostream>
 #include <memory>
+#include <new>
+#include <span>
+#include <type_traits>
 #include <utility>
 
 struct NoReset {
@@ -55,4 +61,31 @@ public:
 
   size_t capacity() const noexcept { return capacity_; }
   size_t available() const noexcept { return n_free_; }
+
+  bool add_chunk(std::span<std::byte> mem, size_t n) noexcept {
+    static_assert(std::is_trivially_destructible_v<T>);
+
+    assert(mem.size() >= n * sizeof(T));
+    assert((reinterpret_cast<uintptr_t>(mem.data()) % alignof(T)) == 0);
+
+    try {
+      auto new_free = std::make_unique<T *[]>(capacity_ + n);
+      for (size_t i = 0; i < n_free_; i++) {
+        new_free[i] = free_[i];
+      }
+      for (size_t i = 0; i < n; i++) {
+        new_free[n_free_ + i] = new (mem.data() + (i * sizeof(T))) T();
+      }
+      capacity_ += n;
+
+      free_ = std::move(new_free);
+      n_free_ += n;
+
+      return true;
+    } catch (const std::bad_alloc &ba) {
+      std::cerr << "[DEBUG]: ObjectPool::add_chunk exception: " << ba.what()
+                << std::endl;
+      return false;
+    }
+  }
 };

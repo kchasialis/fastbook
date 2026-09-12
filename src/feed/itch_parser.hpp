@@ -1,7 +1,7 @@
 #pragma once
 
 #include "buf_reader.hpp"
-#include "mbo_event.hpp"
+#include "types.hpp"
 #include <array>
 #include <cassert>
 #include <span>

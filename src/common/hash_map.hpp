@@ -117,4 +117,28 @@ public:
 
     return true;
   }
+
+  bool rehash(size_t new_capacity) noexcept {
+    try {
+      HashMap new_hashmap(new_capacity);
+
+      for (size_t i = 0; i < capacity_; i++) {
+        if (is_empty(i) || is_deleted(i)) {
+          continue;
+        }
+        [[maybe_unused]] bool ok =
+            new_hashmap.insert(this->data_[i].first, this->data_[i].second);
+        assert(ok);
+      }
+
+      std::swap(this->data_, new_hashmap.data_);
+      std::swap(this->capacity_, new_hashmap.capacity_);
+
+      return true;
+    } catch (const std::bad_alloc &ba) {
+      std::cerr << "[DEBUG]: HashMap::rehash exception: " << ba.what()
+                << std::endl;
+      return false;
+    }
+  }
 };
