@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <memory>
 
 struct Order {
@@ -32,7 +33,7 @@ struct PriceLevel {
 
 class OrderBook {
 public:
-  using order_id_t = uint64_t;
+  enum class AddOrderError { DuplicateOrderId, PriceOutOfWindow };
 
 private:
   static constexpr uint32_t MAX_ORDERS = 2 << 12; // 4096
@@ -45,7 +46,7 @@ private:
   uint32_t best_ask_slot_;
   uint32_t max_orders_;
   ObjectPool<Order> orders_op_;
-  HashMap<order_id_t, Order *> orders_;
+  HashMap<oid_t, Order *> orders_;
   BufferPool &allocator_;
 
   bool grow() noexcept {
@@ -55,16 +56,18 @@ private:
     if (!mem) {
       return false;
     }
+
+    if (!orders_op_.add_chunk(
+            std::span<std::byte>(reinterpret_cast<std::byte *>(mem),
+                                 alloc_bytes),
+            n)) {
+      return false;
+    }
+
+    if (!orders_.rehash(max_orders_ + n)) {
+      return false;
+    }
     max_orders_ += n;
-
-    if (!orders_op_.add_chunk(std::span<std::byte>(
-            reinterpret_cast<std::byte *>(mem, alloc_bytes), n))) {
-      return false;
-    }
-
-    if (!orders_.rehash(max_orders + n)) {
-      return false;
-    }
 
     return true;
   }
@@ -200,10 +203,10 @@ public:
     best_ask_slot_ = window_size;
   }
 
-  bool add_order(order_id_t oid, uint32_t shares, uint32_t price,
-                 Side side) noexcept {
+  [[nodiscard]] std::expected<void, AddOrderError>
+  add_order(oid_t oid, uint32_t shares, uint32_t price, Side side) noexcept {
     if (orders_.find(oid) != nullptr) [[unlikely]] {
-      return false;
+      return std::unexpected(AddOrderError::DuplicateOrderId);
     }
 
     Order *new_order = orders_op_.get();
@@ -228,15 +231,15 @@ public:
 
     if (!add_to_price_queue(new_order)) {
       orders_op_.restore(new_order);
-      return false;
+      return std::unexpected(AddOrderError::PriceOutOfWindow);
     }
 
     orders_.insert(oid, new_order);
 
-    return true;
+    return {};
   }
 
-  bool cancel_order(order_id_t oid) noexcept {
+  bool cancel_order(oid_t oid) noexcept {
     Order *order;
     if ((order = orders_.find(oid)) == nullptr) [[unlikely]] {
       return false;
@@ -252,7 +255,7 @@ public:
     return true;
   }
 
-  bool execute_order(order_id_t oid, uint32_t executed_shares) noexcept {
+  bool execute_order(oid_t oid, uint32_t executed_shares) noexcept {
     Order *order;
     if ((order = orders_.find(oid)) == nullptr) [[unlikely]] {
       return false;
@@ -273,11 +276,11 @@ public:
     return true;
   }
 
-  bool reduce_order(order_id_t oid, uint32_t cancelled_shares) noexcept {
+  bool reduce_order(oid_t oid, uint32_t cancelled_shares) noexcept {
     return execute_order(oid, cancelled_shares);
   }
 
-  Order *get_order_by_oid(order_id_t oid) {
+  Order *get_order_by_oid(oid_t oid) {
     Order *order;
     if ((order = orders_.find(oid)) == nullptr) [[unlikely]] {
       return nullptr;

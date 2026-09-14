@@ -1,9 +1,8 @@
 #pragma once
 
-#include "feed_handler.hpp"
+#include "event_queue.hpp"
 #include "hash_map.hpp"
 #include "order_book.hpp"
-#include "spsc_queue.hpp"
 #include "types.hpp"
 #include <atomic>
 #include <cassert>
@@ -16,12 +15,13 @@ private:
   std::atomic<bool> stop_;
   uint64_t msg_count_{0};
   HashMap<instrument_t, OrderBook *> instrument_map_;
+  BufferPool &bp_ref_;
   std::vector<std::unique_ptr<OrderBook>> owned_books_; // RAII
 
   OrderBook *get_or_init_book(instrument_t instr, uint32_t price) noexcept {
     OrderBook *book = instrument_map_.find(instr);
     if (book == nullptr) [[unlikely]] {
-      auto owned = std::make_unique<OrderBook>();
+      auto owned = std::make_unique<OrderBook>(bp_ref_);
       book = owned.get();
       uint32_t base = price > 100 ? price - 100 : 0;
       book->reset(base, 1, 1024);
@@ -34,7 +34,17 @@ private:
 
   void add_order_handler(const MboEvent &mbo) noexcept {
     OrderBook *book = get_or_init_book(mbo.instrument, mbo.price);
-    book->add_order(mbo.oid, mbo.qty, mbo.price, mbo.side);
+    auto exp = book->add_order(mbo.oid, mbo.qty, mbo.price, mbo.side);
+    if (!exp.has_value()) [[unlikely]] {
+      // TODO(kostas): Add proper handling here.
+      std::terminate();
+      // switch (exp.error()) {
+      // case OrderBook::AddOrderError::DuplicateOrderId: {
+      // }
+      // case OrderBook::AddOrderError::PriceOutOfWindow: {
+      //   std::terminate();
+      // }
+    }
   }
 
   void cancel_order_handler(const MboEvent &mbo) noexcept {
@@ -71,9 +81,9 @@ private:
   }
 
 public:
-  BookBuilder(Consumer &consumer)
+  BookBuilder(Consumer &consumer, BufferPool &bp_ref)
       : consumer_(consumer), stop_(false), instrument_map_(1 << 13),
-        order_map_(1 << 17) {
+        bp_ref_(bp_ref) {
     owned_books_.reserve(8192);
   }
 
@@ -113,3 +123,4 @@ public:
   void stop() { stop_.store(true, std::memory_order_relaxed); }
 
   uint64_t message_count() const { return msg_count_; }
+};

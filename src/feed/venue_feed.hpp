@@ -1,8 +1,8 @@
 #pragma once
 
+#include "event_queue.hpp"
 #include "itch_parser.hpp"
 #include "length_prefix_framer.hpp"
-#include "spsc_queue.hpp"
 #include "transport.hpp"
 #include "types.hpp"
 #include <array>
@@ -15,11 +15,6 @@
 #include <sys/types.h>
 #include <vector>
 
-static constexpr uint32_t N_SHARDS = 4;
-static constexpr size_t QUEUE_SIZE = 4096;
-using Queue = SPSCQueue<MboEvent, QUEUE_SIZE>;
-using Producer = SPSCQueue<MboEvent, QUEUE_SIZE>::SPSCProducer;
-using Consumer = SPSCQueue<MboEvent, QUEUE_SIZE>::SPSCConsumer;
 
 struct AnyMessageSink {
   void on_message(std::span<const std::byte>);
@@ -43,7 +38,7 @@ concept Parser = requires(std::span<const std::byte> b, AnyEventSink &sink) {
   { P::parse(b, sink) } -> std::same_as<void>;
 };
 
-template <Transport Src, Framer F, Parser P> class FeedHandler {
+template <Transport Src, Framer F, Parser P> class VenueFeed {
 private:
   Src &src_;
   std::vector<Producer> producers_;
@@ -51,10 +46,10 @@ private:
   std::atomic<bool> stop_requested_;
 
 public:
-  FeedHandler(Src &src, std::array<Queue, N_SHARDS> &queues)
+  VenueFeed(Src &src, std::array<Queue, N_SHARDS> &queues)
       : src_(src), stop_requested_(false) {
-    static_assert(MessageSink<FeedHandler>);
-    static_assert(EventSink<FeedHandler>);
+    static_assert(MessageSink<VenueFeed>);
+    static_assert(EventSink<VenueFeed>);
 
     producers_.reserve(queues.size());
     for (size_t i = 0; i < queues.size(); i++) {
