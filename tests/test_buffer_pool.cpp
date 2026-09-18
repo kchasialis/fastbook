@@ -8,6 +8,8 @@
 
 #include "buffer_pool.hpp"
 
+using namespace bufpool;
+
 namespace {
 
 // Size of the VMA containing p, straight from /proc/self/maps. 0 if unmapped.

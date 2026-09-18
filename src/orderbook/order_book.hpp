@@ -47,7 +47,7 @@ private:
   uint32_t max_orders_;
   ObjectPool<Order> orders_op_;
   HashMap<oid_t, Order *> orders_;
-  BufferPool &allocator_;
+  bufpool::BufferPool &allocator_;
 
   bool grow() noexcept {
     size_t n = max_orders_;
@@ -190,7 +190,7 @@ private:
   }
 
 public:
-  OrderBook(BufferPool &allocator)
+  OrderBook(bufpool::BufferPool &allocator)
       : max_orders_(MAX_ORDERS), orders_op_(max_orders_), orders_(max_orders_),
         allocator_(allocator) {}
 

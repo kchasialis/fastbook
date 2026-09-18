@@ -11,10 +11,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <pthread.h>
 #include <span>
 #include <sys/types.h>
 #include <vector>
-
 
 struct AnyMessageSink {
   void on_message(std::span<const std::byte>);
@@ -44,10 +44,12 @@ private:
   std::vector<Producer> producers_;
   F framer_;
   std::atomic<bool> stop_requested_;
+  bufpool::BufferPool &bp_ref_;
 
 public:
-  VenueFeed(Src &src, std::array<Queue, N_SHARDS> &queues)
-      : src_(src), stop_requested_(false) {
+  VenueFeed(Src &src, std::array<Queue, N_SHARDS> &queues,
+            bufpool::BufferPool &bp_ref)
+      : src_(src), stop_requested_(false), bp_ref_(bp_ref) {
     static_assert(MessageSink<VenueFeed>);
     static_assert(EventSink<VenueFeed>);
 
@@ -66,7 +68,15 @@ public:
 
   void on_error(FramingError e) noexcept { (void)e; }
 
-  void run() noexcept {
+  void run(uint32_t core) noexcept {
+    if (!pin_and_prioritize(pthread_self(), core)) {
+      std::cerr << "[DEBUG]: Failed to pin thread to core: " << core
+                << std::endl;
+      return;
+    }
+
+    bp_ref_.reserve(1024); // TODO(kostas): Decide how much?
+
     while (!stop_requested_.load(std::memory_order_relaxed)) {
       auto buf = src_.next();
       if (!buf.has_value()) {

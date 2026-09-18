@@ -13,6 +13,8 @@
 #include <sys/mman.h>
 #include <utility>
 
+namespace bufpool {
+
 static constexpr uint32_t MIN_CLASS_SIZE = 16;
 static constexpr uint32_t MAX_CLASS_SIZE = 8192;
 static constexpr uint32_t MIN_SHIFT = std::countr_zero(MIN_CLASS_SIZE);
@@ -415,3 +417,5 @@ public:
     return true;
   }
 };
+
+} // namespace bufpool

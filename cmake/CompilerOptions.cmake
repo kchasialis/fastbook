@@ -2,7 +2,13 @@ add_library(fastbook_options INTERFACE)
 
 target_compile_features(fastbook_options INTERFACE cxx_std_23)
 
+# No RTTI: nothing in the tree uses typeid or dynamic_cast, and no class is
+# polymorphic (dispatch is templates + concepts, resolved at compile time).
+# Dropping it removes the typeinfo objects and vtable typeinfo slots from the
+# binary and makes an accidental dynamic_cast a compile error instead of a
+# silent runtime cost.
 target_compile_options(fastbook_options INTERFACE
+        -fno-rtti
         -Wall
         -Wextra
         -Wpedantic

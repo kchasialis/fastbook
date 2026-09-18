@@ -15,7 +15,7 @@ private:
   std::atomic<bool> stop_;
   uint64_t msg_count_{0};
   HashMap<instrument_t, OrderBook *> instrument_map_;
-  BufferPool &bp_ref_;
+  bufpool::BufferPool &bp_ref_;
   std::vector<std::unique_ptr<OrderBook>> owned_books_; // RAII
 
   OrderBook *get_or_init_book(instrument_t instr, uint32_t price) noexcept {
@@ -23,6 +23,7 @@ private:
     if (book == nullptr) [[unlikely]] {
       auto owned = std::make_unique<OrderBook>(bp_ref_);
       book = owned.get();
+      // need to fix that with actual configs fetched offline.
       uint32_t base = price > 100 ? price - 100 : 0;
       book->reset(base, 1, 1024);
       owned_books_.push_back(std::move(owned));
@@ -81,13 +82,23 @@ private:
   }
 
 public:
-  BookBuilder(Consumer &consumer, BufferPool &bp_ref)
+  BookBuilder(Consumer &consumer, bufpool::BufferPool &bp_ref)
       : consumer_(consumer), stop_(false), instrument_map_(1 << 13),
         bp_ref_(bp_ref) {
     owned_books_.reserve(8192);
   }
 
-  void run() {
+  void run(uint32_t core) {
+    if (!pin_and_prioritize(pthread_self(), core)) {
+      std::cerr << "[DEBUG] BookBuilder::run(): Failed to pin thread at core: "
+                << core << std::endl;
+      return;
+    }
+
+    bufpool::thread_init();
+
+    bp_ref_.reserve(1024); // TODO(kostas): How much to reserve here?
+
     while (!stop_.load(std::memory_order_relaxed)) {
       std::optional<MboEvent> mbo_opt;
       while ((mbo_opt = consumer_.pop()) == std::nullopt) {

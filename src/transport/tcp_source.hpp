@@ -10,6 +10,7 @@
 #include <cstring>
 #include <liburing.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <optional>
 #include <source_location>
 #include <span>
@@ -92,6 +93,12 @@ private:
     return std::unexpected(err);
   }
 
+  void set_quickack_() noexcept {
+    const int one = 1;
+    (void)setsockopt(sockfd_.val(), IPPROTO_TCP, TCP_QUICKACK, &one,
+                     sizeof(one));
+  }
+
   bool rearm_recv_() noexcept {
     io_uring_data_t *data = pool_.get();
     if (!data) [[unlikely]] {
@@ -142,6 +149,16 @@ public:
     check(connect(sockfd_.val(), reinterpret_cast<struct sockaddr *>(&addr),
                   static_cast<socklen_t>(sizeof(addr))),
           "connect()");
+
+    // Disable Nagle's algorithm. Nagle holds back a small segment while
+    // earlier data is unacknowledged.
+    const int one = 1;
+    check(
+        setsockopt(sockfd_.val(), IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)),
+        "setsockopt(TCP_NODELAY)");
+
+    // Receive side: ACK the feed immediately rather than delaying it.
+    set_quickack_();
 
     sendfd_ = check(dup(sockfd_.val()), "dup()");
 
@@ -226,6 +243,8 @@ public:
     if (static_cast<size_t>(ret) != d.size()) [[unlikely]] {
       return fail_(Status::Error);
     }
+
+    set_quickack_();
 
     return {};
   }
