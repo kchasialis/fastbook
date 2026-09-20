@@ -11,7 +11,7 @@
 
 class BookBuilder {
 private:
-  Consumer &consumer_;
+  Consumer consumer_;
   std::atomic<bool> stop_;
   uint64_t msg_count_{0};
   HashMap<instrument_t, OrderBook *> instrument_map_;
@@ -82,7 +82,7 @@ private:
   }
 
 public:
-  BookBuilder(Consumer &consumer, bufpool::BufferPool &bp_ref)
+  BookBuilder(Consumer consumer, bufpool::BufferPool &bp_ref)
       : consumer_(consumer), stop_(false), instrument_map_(1 << 13),
         bp_ref_(bp_ref) {
     owned_books_.reserve(8192);
@@ -95,9 +95,14 @@ public:
       return;
     }
 
-    bufpool::thread_init();
+    std::string tname = "bbuilder_" + std::to_string(core);
+    if (!pthread_setname_np(pthread_self(), tname.c_str()) != 0) {
+      std::cerr << "[DEBUG] BookBuilder::run(): Failed to set thread name"
+                << std::endl;
+      return;
+    }
 
-    bp_ref_.reserve(1024); // TODO(kostas): How much to reserve here?
+    bufpool::thread_init();
 
     while (!stop_.load(std::memory_order_relaxed)) {
       std::optional<MboEvent> mbo_opt;

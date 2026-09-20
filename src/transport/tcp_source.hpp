@@ -166,8 +166,8 @@ public:
     params.flags = IORING_SETUP_SQPOLL;
     params.sq_thread_idle = 2000;
 
-    check(io_uring_queue_init_params(RING_MAX_ENTRIES, &ring_, &params),
-          "io_uring_queue_init_params()");
+    check_neg(io_uring_queue_init_params(RING_MAX_ENTRIES, &ring_, &params),
+              "io_uring_queue_init_params()");
 
     (void)rearm_recv_();
   }

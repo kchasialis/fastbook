@@ -75,7 +75,14 @@ public:
       return;
     }
 
-    bp_ref_.reserve(1024); // TODO(kostas): Decide how much?
+    std::string tname = "bbuilder_" + std::to_string(core);
+    if (!pthread_setname_np(pthread_self(), tname.c_str()) != 0) {
+      std::cerr << "[DEBUG] BookBuilder::run(): Failed to set thread name"
+                << std::endl;
+      return;
+    }
+
+    bufpool::thread_init();
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
       auto buf = src_.next();

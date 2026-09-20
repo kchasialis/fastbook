@@ -18,22 +18,28 @@ private:
   alignas(
       std::hardware_destructive_interference_size) std::atomic<size_t> tail_;
 
+  bool empty_at(size_t tail_val) const noexcept {
+    return head_.load(std::memory_order_acquire) == tail_val;
+  }
+
   bool empty() const noexcept {
-    return head_.load(std::memory_order_acquire) ==
-           tail_.load(std::memory_order_relaxed);
+    return empty_at(tail_.load(std::memory_order_relaxed));
+  }
+
+  bool full_at(size_t head_val) const noexcept {
+    return ((head_val + 1) & (N - 1)) == tail_.load(std::memory_order_acquire);
   }
 
   bool full() const noexcept {
-    return ((head_.load(std::memory_order_relaxed) + 1) & (N - 1)) ==
-           tail_.load(std::memory_order_acquire);
+    return full_at(head_.load(std::memory_order_relaxed));
   }
 
   template <typename... Args> bool push(Args &&...args) {
-    if (full()) {
+    size_t head_val = head_.load(std::memory_order_relaxed);
+    if (full_at(head_val)) {
       return false;
     }
 
-    size_t head_val = head_.load(std::memory_order_relaxed);
     new (&buffer_[head_val * sizeof(T)]) T(std::forward<Args>(args)...);
     head_.store((head_val + 1) & (N - 1), std::memory_order_release);
 
@@ -41,10 +47,10 @@ private:
   }
 
   std::optional<T> pop() noexcept {
-    if (empty()) {
+    size_t tail_val = tail_.load(std::memory_order_relaxed);
+    if (empty_at(tail_val)) {
       return std::nullopt;
     }
-    size_t tail_val = tail_.load(std::memory_order_relaxed);
 
     T *obj = reinterpret_cast<T *>(&buffer_[tail_val * sizeof(T)]);
     T value = std::move(*obj);

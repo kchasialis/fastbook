@@ -68,8 +68,6 @@ struct ThreadConfig {
       std::string_view role = trim(entry.substr(0, colon));
       std::string_view value = trim(entry.substr(colon + 1));
 
-      // from_chars rather than operator>>: rejects signs, trailing garbage
-      // ("3abc") and out-of-range values instead of silently truncating.
       uint32_t core{};
       const char *end = value.data() + value.size();
       auto [ptr, ec] = std::from_chars(value.data(), end, core);

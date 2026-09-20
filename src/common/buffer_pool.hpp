@@ -37,7 +37,9 @@ public:
   void clear_bit(uint32_t i) noexcept { data_ &= ~(1U << i); }
   void set_bit(uint32_t i) noexcept { data_ |= (1U << i); }
   bool get_bit(uint32_t i) const noexcept { return data_ & (1U << i); }
-  uint32_t first_empty() const noexcept { return std::countr_one(data_); }
+  uint32_t first_empty() const noexcept {
+    return static_cast<uint32_t>(std::countr_one(data_));
+  }
 };
 
 struct Block {
@@ -50,7 +52,7 @@ inline TreiberStack<Block, &Block::next, Untagged> g_classes[N_CLASSES];
 // Returns the class index for this sz.
 inline uint32_t class_of(size_t sz) noexcept {
   size_t ceil = std::bit_ceil(sz);
-  uint32_t exp = std::countr_zero(ceil);
+  uint32_t exp = static_cast<uint32_t>(std::countr_zero(ceil));
   if (exp < MIN_SHIFT) [[unlikely]] {
     return 0;
   }
@@ -144,7 +146,7 @@ private:
     g_classes[cls].push_chain(head, current);
   }
 
-  void refill_from_chain(size_t cls, Block *head, Block *tail) noexcept {
+  void refill_from_chain(size_t cls, Block *head) noexcept {
     auto &state = classes_[cls];
     while (head && state.top_ < state.stk_.size()) {
       state.stk_[state.top_++] = head;
@@ -152,8 +154,33 @@ private:
     }
 
     if (head) {
-      g_classes[cls].push_chain(head, tail);
+      Block *rtail = head;
+      while (rtail->next) {
+        rtail = rtail->next;
+      }
+      g_classes[cls].push_chain(head, rtail);
     }
+  }
+
+  bool take_batch(uint8_t cls) noexcept {
+    auto &state = classes_[cls];
+    Block *head = g_classes[cls].take_all();
+    bool found = head != nullptr;
+    size_t batch_size = std::min(BATCH_SIZE, state.stk_.size() - state.top_);
+    for (size_t i = 0; i < batch_size && head; i++) {
+      state.stk_[state.top_++] = head;
+      head = head->next;
+    }
+
+    if (head) {
+      Block *rtail = head;
+      while (rtail->next) {
+        rtail = rtail->next;
+      }
+      g_classes[cls].push_chain(head, rtail);
+    }
+
+    return found;
   }
 
   void donate_all() noexcept {
@@ -177,32 +204,6 @@ private:
   bool is_full(uint8_t cls) const noexcept {
     auto &state = classes_[cls];
     return state.top_ >= state.stk_.size();
-  }
-
-  bool take_batch(uint8_t cls) noexcept {
-    auto &state = classes_[cls];
-    Block *head = g_classes[cls].take_all();
-    bool found = head != nullptr;
-    Block *tail = head;
-    size_t batch_size = std::min(BATCH_SIZE, state.stk_.size() - state.top_);
-    for (size_t i = 0; i < batch_size && head; i++) {
-      state.stk_[state.top_++] = head;
-      head = head->next;
-      tail = head;
-    }
-
-    /* Need to walk to find the tail, known and deliberate design limitation. */
-    Block *current = head;
-    while (current) {
-      tail = current;
-      current = current->next;
-    }
-
-    if (head) {
-      g_classes[cls].push_chain(head, tail);
-    }
-
-    return found;
   }
 
 public:
@@ -353,7 +354,7 @@ private:
     }
 
     auto p = carve_run_in_blocks(base, cls);
-    magazine.refill_from_chain(cls, p.first, p.second);
+    magazine.refill_from_chain(cls, p.first);
 
     if (free_chunk->has_free_runs()) {
       chunks_with_free_runs.push(free_chunk);
@@ -376,7 +377,7 @@ public:
                                       sizeof(*cnk));
     }
 
-    size_t cls = class_of(sz);
+    uint8_t cls = class_of(sz);
 
     void *p = magazine.pop(cls);
     if (!p) {
@@ -400,18 +401,22 @@ public:
   }
 
   /* Refills the magazines to the full for this specific size-class. */
-  bool reserve(size_t sz) noexcept {
+  [[nodiscard]] bool reserve(size_t sz) noexcept {
     if (!thread_is_init()) {
       thread_init();
     }
 
-    size_t cls = class_of(sz);
+    uint8_t cls = static_cast<uint8_t>(class_of(sz));
     while (!magazine.is_full(cls)) {
-      if (!magazine.take_batch(cls)) {
+      Block *head = g_classes[cls].take_all();
+
+      if (!head) {
         if (!refill(cls)) {
           return false;
         }
+        continue;
       }
+      magazine.refill_from_chain(cls, head);
     }
 
     return true;

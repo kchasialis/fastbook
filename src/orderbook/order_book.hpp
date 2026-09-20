@@ -36,7 +36,7 @@ public:
   enum class AddOrderError { DuplicateOrderId, PriceOutOfWindow };
 
 private:
-  static constexpr uint32_t MAX_ORDERS = 2 << 12; // 4096
+  static constexpr uint32_t MAX_ORDERS = 1 << 12; // 4096
 
   std::unique_ptr<PriceLevel[]> levels_;
   uint32_t base_price_;
