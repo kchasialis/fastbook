@@ -10,3 +10,10 @@ target_link_libraries(fastbook_bench
     PRIVATE orderbook
     PRIVATE benchmark::benchmark_main
 )
+
+add_executable(fastbook_bench_logger bench_logger.cpp)
+
+target_link_libraries(fastbook_bench_logger
+    PRIVATE fastbook_options
+    PRIVATE common
+)

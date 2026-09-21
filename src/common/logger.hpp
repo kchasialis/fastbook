@@ -8,13 +8,18 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <format>
 #include <iostream>
 #include <iterator>
 #include <print>
+#include <pthread.h>
+#include <sched.h>
 #include <string>
 #include <string_view>
+#include <sys/mman.h>
 #include <thread>
 #include <tuple>
 #include <type_traits>
@@ -106,6 +111,7 @@ inline constexpr size_t min_wire_size =
     std::is_same_v<Stored_t<T>, std::string_view> ? sizeof(StrLen)
                                                   : sizeof(Stored_t<T>);
 
+static constexpr size_t HUGE_PAGE_BYTES = 2 * 1024 * 1024;
 static constexpr uint32_t N_SLOTS = 64;
 static constexpr size_t LOG_RING_SIZE = 4096;
 using LogRing = SPSCQueue<Record, LOG_RING_SIZE>;
@@ -133,7 +139,30 @@ inline void thread_init() {
     return;
   }
 
-  auto *ring = new LogRing();
+  // The ring is streamed through sequentially, and with 4 KiB pages every
+  // sixteenth record (16 x 256 B) starts a new page: measured at ~7x the
+  // median cost, because neither the hardware prefetcher nor the TLB follows
+  // us across the boundary. One 2 MiB huge page removes 511 of every 512
+  // boundaries, so the allocation is aligned and sized to a huge page and
+  // MADV_HUGEPAGE asks for one (the kernel is in madvise mode by default).
+  // Populate the page tables now, so the producer never takes a minor fault
+  // mid session: a fault costs microseconds and lands on the hot thread.
+  // POPULATE_WRITE prefaults the pages.
+  static constexpr size_t RING_BYTES =
+      ((sizeof(LogRing) + HUGE_PAGE_BYTES - 1) / HUGE_PAGE_BYTES) *
+      HUGE_PAGE_BYTES;
+
+  void *mem = std::aligned_alloc(HUGE_PAGE_BYTES, RING_BYTES);
+  if (!mem) [[unlikely]] {
+    std::cerr << "logger: cannot allocate a ring" << std::endl;
+    return;
+  }
+
+  (void)::madvise(mem, RING_BYTES, MADV_HUGEPAGE);
+  (void)::madvise(mem, RING_BYTES, MADV_POPULATE_WRITE);
+
+  auto *ring = new (mem) LogRing();
+
   slots[current].ring.store(ring, std::memory_order_release);
   log_slot = &slots[current];
 }
@@ -230,10 +259,35 @@ void emit(const Descriptor *desc, std::format_string<Args...> fmt,
   }
 }
 
+// Where the cold thread writes. Defaults to stderr.
+inline std::atomic<int> out_fd{STDERR_FILENO};
+
+inline bool open_output(const char *path) noexcept {
+  int fd = ::open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+  if (fd < 0) {
+    return false;
+  }
+
+  int old = out_fd.exchange(fd, std::memory_order_release);
+  if (old != STDERR_FILENO) {
+    ::close(old);
+  }
+
+  return true;
+}
+
+inline void close_output() noexcept {
+  int old = out_fd.exchange(STDERR_FILENO, std::memory_order_release);
+  if (old != STDERR_FILENO) {
+    ::close(old);
+  }
+}
+
 inline void write_all(std::string_view buf) noexcept {
+  const int fd = out_fd.load(std::memory_order_acquire);
   size_t off = 0;
   while (off < buf.size()) {
-    ssize_t n = ::write(STDERR_FILENO, buf.data() + off, buf.size() - off);
+    ssize_t n = ::write(fd, buf.data() + off, buf.size() - off);
     if (n < 0) {
       if (errno == EINTR) {
         continue;
@@ -304,7 +358,17 @@ inline bool drain_and_log(std::vector<Record> &recs, std::string &out_buff,
   return !recs.empty();
 }
 
-inline void logger_thread() {
+// core < 0 leaves the thread wherever the scheduler puts it. Pinning it to a
+// housekeeping core keeps it from preempting a producer; no priority change,
+// this thread is meant to lose.
+inline void logger_thread(int core = -1) {
+  if (core >= 0) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(static_cast<unsigned>(core), &set);
+    (void)pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+  }
+
   std::vector<Record> recs;
   recs.reserve(LOG_RING_SIZE);
   std::string out_buff;
