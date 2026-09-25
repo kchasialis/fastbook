@@ -204,8 +204,7 @@ int main(int argc, char **argv) {
 
   pin_to_core(1);
 
-  // Cold thread on core 0, this one on core 1: neither preempts the other.
-  std::thread backend(logger::logger_thread, 0);
+  std::thread backend(logger::logger_thread);
   logger::thread_init();
 
   const double tsc_hz = measure_tsc_hz();

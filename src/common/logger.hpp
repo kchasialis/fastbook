@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -15,8 +17,6 @@
 #include <iostream>
 #include <iterator>
 #include <print>
-#include <pthread.h>
-#include <sched.h>
 #include <string>
 #include <string_view>
 #include <sys/mman.h>
@@ -83,8 +83,7 @@ struct Record {
 static_assert(sizeof(Record) == RECORD_BYTES);
 
 using StrLen = std::conditional_t<PAYLOAD_BYTES <= 255, uint8_t, uint16_t>;
-using FormatFn = void (*)(std::string &out, const char *fmt,
-                          const std::byte *payload);
+using FormatFn = void (*)(const std::byte *payload, std::string &out);
 
 template <typename T> struct Stored {
   static_assert(std::is_trivially_copyable_v<T>,
@@ -182,7 +181,8 @@ struct Descriptor {
           .file = __FILE__,                                                    \
           .line = __LINE__,                                                    \
           .level = lvl,                                                        \
-          .fn = logger::decoder_for<decltype(std::make_tuple(__VA_ARGS__))>};  \
+          .fn = logger::decoder_for<logger::constant_string{fmt_},             \
+                                    decltype(std::make_tuple(__VA_ARGS__))>};  \
       static_assert(fastbook_log_desc_.fn != nullptr);                         \
       logger::emit(&fastbook_log_desc_, fmt_ __VA_OPT__(, ) __VA_ARGS__);      \
     }                                                                          \
@@ -216,20 +216,6 @@ template <typename T> void write_one(std::byte *payload, size_t &off, T a) {
 }
 
 template <class... Args>
-void decode(std::string &out, const char *fmt, const std::byte *payload) {
-  std::tuple<Args...> args;
-
-  std::apply([&](auto &...a) { (read_one(payload, a), ...); }, args);
-
-  std::apply(
-      [&](auto &...a) {
-        std::vformat_to(std::back_inserter(out), fmt,
-                        std::make_format_args(a...));
-      },
-      args);
-}
-
-template <class... Args>
 void emit(const Descriptor *desc, std::format_string<Args...> fmt,
           Args &&...args) {
   static_assert((min_wire_size<Args> + ... + 0) <= PAYLOAD_BYTES,
@@ -242,21 +228,25 @@ void emit(const Descriptor *desc, std::format_string<Args...> fmt,
     return;
   }
 
-  Record record;
-
-  record.hdr.tsc = __rdtsc();
-  record.hdr.desc = desc;
-
-  [[maybe_unused]] size_t off = 0;
-  (write_one(record.payload, off, static_cast<Stored_t<Args>>(args)), ...);
-
   LogRing *ring = log_slot->ring.load(std::memory_order_relaxed);
-  if (!ring->producer().push(std::move(record))) {
+  auto prod = ring->producer();
+  auto *slot = prod.try_reserve();
+  if (!slot) [[unlikely]] {
+    std::atomic<uint64_t> &d = log_slot->dropped;
     // Only this thread writes its own counter, so a load + store is better
     // than RMW because RMW drains the store buffer (lock instruction on x86).
-    std::atomic<uint64_t> &d = log_slot->dropped;
     d.store(d.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    return;
   }
+
+  auto *record = new (slot) Record;
+  record->hdr.tsc = __rdtsc();
+  record->hdr.desc = desc;
+
+  [[maybe_unused]] size_t off = 0;
+  (write_one(record->payload, off, static_cast<Stored_t<Args>>(args)), ...);
+
+  prod.commit();
 }
 
 // Where the cold thread writes. Defaults to stderr.
@@ -339,7 +329,7 @@ inline bool drain_and_log(std::vector<Record> &recs, std::string &out_buff,
     const Descriptor *desc = rec.hdr.desc;
     out.clear();
     try {
-      desc->fn(out, desc->fmt, rec.payload);
+      desc->fn(rec.payload, out);
     } catch (...) {
       failed++;
       continue;
@@ -358,17 +348,7 @@ inline bool drain_and_log(std::vector<Record> &recs, std::string &out_buff,
   return !recs.empty();
 }
 
-// core < 0 leaves the thread wherever the scheduler puts it. Pinning it to a
-// housekeeping core keeps it from preempting a producer; no priority change,
-// this thread is meant to lose.
-inline void logger_thread(int core = -1) {
-  if (core >= 0) {
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(static_cast<unsigned>(core), &set);
-    (void)pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
-  }
-
+inline void logger_thread() {
   std::vector<Record> recs;
   recs.reserve(LOG_RING_SIZE);
   std::string out_buff;
@@ -386,10 +366,101 @@ inline void logger_thread(int core = -1) {
   drain_and_log(recs, out_buff, out, seen_dropped);
 }
 
-template <class Tuple> inline constexpr FormatFn decoder_for = nullptr;
+template <size_t N> struct constant_string {
+  char chars[N];
+  consteval constant_string(const char (&s)[N]) {
+    // copy_n instead of memcpy because copy_n is constexpr.
+    std::copy_n(s, N, chars);
+  }
 
-template <class... Args>
-inline constexpr FormatFn decoder_for<std::tuple<Args...>> =
-    &decode<Stored_t<Args>...>;
+  // N - 1 because it includes the '\0'
+  consteval size_t size() const { return N - 1; }
+};
+
+template <size_t N>
+consteval size_t count_fields(const constant_string<N> &fmt) {
+  size_t n = 0;
+  for (size_t i = 0; i + 1 < fmt.size(); i++) {
+    if (fmt.chars[i] == '{' && fmt.chars[i + 1] == '}') {
+      ++n;
+      ++i;
+    }
+  }
+  return n;
+}
+
+struct Segment {
+  size_t start;
+  size_t len;
+};
+
+template <size_t K, size_t N>
+consteval std::array<std::string_view, K + 1>
+split(const constant_string<N> &fmt) {
+  std::array<std::string_view, K + 1> segments{};
+
+  size_t current_seg = 0;
+  size_t current_start = 0;
+  for (size_t i = 0; i < fmt.size(); i++) {
+    if (fmt.chars[i] == '{') {
+      if (i + 1 == fmt.size() || fmt.chars[i + 1] != '}') {
+        throw "unsupported format: unclosed '{'";
+      }
+      size_t len = i - current_start;
+      segments[current_seg++] =
+          std::string_view(fmt.chars + current_start, len);
+      current_start = i + 2;
+      i++;
+    } else if (fmt.chars[i] == '}') {
+      throw "unsupported format: unclosed '}'";
+    }
+  }
+  segments[K] =
+      std::string_view(fmt.chars + current_start, fmt.size() - current_start);
+
+  return segments;
+}
+
+template <class T> constexpr void format_arg(const T &arg, std::string &out) {
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    out.append(arg);
+  } else if constexpr (std::is_same_v<T, bool>) {
+    out.append(arg ? "true" : "false");
+  } else if constexpr (std::is_same_v<T, char>) {
+    out.push_back(arg);
+  } else if constexpr (std::is_arithmetic_v<T>) {
+    char buf[48];
+    [[maybe_unused]] auto [ptr, ec] =
+        std::to_chars(buf, buf + sizeof(buf), arg);
+    assert(ec == std::errc{});
+    out.append(buf, static_cast<size_t>(ptr - buf));
+  } else {
+    static_assert(false, "format_arg: unsupported type");
+  }
+}
+
+template <constant_string Fmt, class... Stored>
+void decode(const std::byte *payload, std::string &out) {
+  static constexpr size_t K = count_fields(Fmt);
+  static_assert(K == sizeof...(Stored),
+                "format string / argument count mismatch");
+  static constexpr auto segs = split<K>(Fmt);
+
+  std::tuple<Stored...> args;
+
+  std::apply([&](auto &...a) { (read_one(payload, a), ...); }, args);
+
+  [&]<size_t... I>(std::index_sequence<I...>) {
+    ((out += segs[I], format_arg(std::get<I>(args), out)), ...);
+  }(std::index_sequence_for<Stored...>{});
+  out += segs[K];
+}
+
+template <constant_string Fmt, class Tuple>
+inline constexpr FormatFn decoder_for = nullptr;
+
+template <constant_string Fmt, class... Args>
+inline constexpr FormatFn decoder_for<Fmt, std::tuple<Args...>> =
+    &decode<Fmt, Stored_t<Args>...>;
 
 } // namespace logger
