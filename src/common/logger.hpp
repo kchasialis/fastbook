@@ -66,10 +66,10 @@ constexpr std::string_view level_to_str(Level lvl) {
 #define LOG_FATAL(fmt, ...)                                                    \
   FASTBOOK_LOG(logger::Level::FATAL, fmt __VA_OPT__(, ) __VA_ARGS__)
 
-struct Descriptor;
+struct LogMetadata;
 
 struct RecordHeader {
-  const Descriptor *desc;
+  const LogMetadata *meta;
   uint64_t tsc;
 };
 
@@ -166,7 +166,7 @@ inline void thread_init() {
   log_slot = &slots[current];
 }
 
-struct Descriptor {
+struct LogMetadata {
   const char *fmt, *file;
   uint32_t line;
   Level level;
@@ -176,15 +176,15 @@ struct Descriptor {
 #define FASTBOOK_LOG(lvl, fmt_, ...)                                           \
   do {                                                                         \
     if constexpr (static_cast<int>(lvl) >= FASTBOOK_LOG_LEVEL) {               \
-      static constexpr logger::Descriptor fastbook_log_desc_{                  \
+      static constexpr logger::LogMetadata fastbook_log_meta_{                 \
           .fmt = fmt_,                                                         \
           .file = __FILE__,                                                    \
           .line = __LINE__,                                                    \
           .level = lvl,                                                        \
           .fn = logger::decoder_for<logger::constant_string{fmt_},             \
                                     decltype(std::make_tuple(__VA_ARGS__))>};  \
-      static_assert(fastbook_log_desc_.fn != nullptr);                         \
-      logger::emit(&fastbook_log_desc_, fmt_ __VA_OPT__(, ) __VA_ARGS__);      \
+      static_assert(fastbook_log_meta_.fn != nullptr);                         \
+      logger::emit(&fastbook_log_meta_, fmt_ __VA_OPT__(, ) __VA_ARGS__);      \
     }                                                                          \
   } while (0)
 
@@ -216,14 +216,14 @@ template <typename T> void write_one(std::byte *payload, size_t &off, T a) {
 }
 
 template <class... Args>
-void emit(const Descriptor *desc, std::format_string<Args...> fmt,
+void emit(const LogMetadata *meta, std::format_string<Args...> fmt,
           Args &&...args) {
   static_assert((min_wire_size<Args> + ... + 0) <= PAYLOAD_BYTES,
                 "log call has too many arguments for one record");
 
   if (!log_slot) [[unlikely]] {
-    std::print(stderr, "[{}] {}:{} ", level_to_str(desc->level), desc->file,
-               desc->line);
+    std::print(stderr, "[{}] {}:{} ", level_to_str(meta->level), meta->file,
+               meta->line);
     std::println(stderr, fmt, std::forward<Args>(args)...);
     return;
   }
@@ -241,7 +241,7 @@ void emit(const Descriptor *desc, std::format_string<Args...> fmt,
 
   auto *record = new (slot) Record;
   record->hdr.tsc = __rdtsc();
-  record->hdr.desc = desc;
+  record->hdr.meta = meta;
 
   [[maybe_unused]] size_t off = 0;
   (write_one(record->payload, off, static_cast<Stored_t<Args>>(args)), ...);
@@ -326,16 +326,16 @@ inline bool drain_and_log(std::vector<Record> &recs, std::string &out_buff,
 
   uint64_t failed = 0;
   for (const Record &rec : recs) {
-    const Descriptor *desc = rec.hdr.desc;
+    const LogMetadata *meta = rec.hdr.meta;
     out.clear();
     try {
-      desc->fn(rec.payload, out);
+      meta->fn(rec.payload, out);
     } catch (...) {
       failed++;
       continue;
     }
     std::format_to(std::back_inserter(out_buff), "[{}] {}:{} {}\n",
-                   level_to_str(desc->level), desc->file, desc->line, out);
+                   level_to_str(meta->level), meta->file, meta->line, out);
   }
 
   if (failed > 0) {
@@ -388,11 +388,6 @@ consteval size_t count_fields(const constant_string<N> &fmt) {
   }
   return n;
 }
-
-struct Segment {
-  size_t start;
-  size_t len;
-};
 
 template <size_t K, size_t N>
 consteval std::array<std::string_view, K + 1>
