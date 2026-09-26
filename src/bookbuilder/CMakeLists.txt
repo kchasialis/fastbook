@@ -6,7 +6,5 @@ target_include_directories(bookbuilder INTERFACE
 
 target_link_libraries(bookbuilder
     INTERFACE fastbook_options
-    INTERFACE spsc
-    INTERFACE feed
-    INTERFACE matching
+    INTERFACE common
 )

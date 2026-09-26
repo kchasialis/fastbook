@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <immintrin.h>
 #include <vector>
 
 #ifdef __APPLE__
@@ -24,6 +25,20 @@ inline int64_t now_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
              std::chrono::high_resolution_clock::now().time_since_epoch())
       .count();
+}
+
+inline std::pair<uint64_t, uint32_t> rdtscp_start() {
+  uint32_t aux;
+  _mm_lfence();
+  uint64_t tsc = __rdtscp(&aux);
+  return {tsc, aux};
+}
+
+inline std::pair<uint64_t, uint32_t> rdtscp_end() {
+  uint32_t aux;
+  uint64_t tsc = __rdtscp(&aux);
+  _mm_lfence();
+  return {tsc, aux};
 }
 
 inline std::pair<double, double> percentiles(std::vector<int64_t> &v) {

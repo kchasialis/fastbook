@@ -1,13 +1,15 @@
 #pragma once
 
+#include "buffer_pool.hpp"
 #include "hash_map.hpp"
-#include "slab_allocator.hpp"
+#include "object_pool.hpp"
+#include "types.hpp"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <expected>
 #include <memory>
-
-enum class Side : uint8_t { BID, ASK };
 
 struct Order {
   uint64_t order_num;
@@ -16,6 +18,10 @@ struct Order {
   Side side;
   Order *next;
   Order *prev;
+
+  struct Reset {
+    static void operator()(Order &o) noexcept { std::memset(&o, 0, sizeof(o)); }
+  };
 };
 
 struct PriceLevel {
@@ -27,10 +33,10 @@ struct PriceLevel {
 
 class OrderBook {
 public:
-  using order_id_t = uint64_t;
+  enum class AddOrderError { DuplicateOrderId, PriceOutOfWindow };
 
 private:
-  static constexpr uint32_t MAX_ORDERS = 2 << 15;
+  static constexpr uint32_t MAX_ORDERS = 1 << 12; // 4096
 
   std::unique_ptr<PriceLevel[]> levels_;
   uint32_t base_price_;
@@ -38,8 +44,33 @@ private:
   uint32_t window_size_;
   uint32_t best_bid_slot_;
   uint32_t best_ask_slot_;
-  SlabAllocator<Order> allocator_;
-  HashMap<order_id_t, Order *> orders_;
+  uint32_t max_orders_;
+  ObjectPool<Order> orders_op_;
+  HashMap<oid_t, Order *> orders_;
+  bufpool::BufferPool &allocator_;
+
+  bool grow() noexcept {
+    size_t n = max_orders_;
+    size_t alloc_bytes = n * sizeof(Order);
+    void *mem = allocator_.alloc(alloc_bytes);
+    if (!mem) {
+      return false;
+    }
+
+    if (!orders_op_.add_chunk(
+            std::span<std::byte>(reinterpret_cast<std::byte *>(mem),
+                                 alloc_bytes),
+            n)) {
+      return false;
+    }
+
+    if (!orders_.rehash(max_orders_ + n)) {
+      return false;
+    }
+    max_orders_ += n;
+
+    return true;
+  }
 
   bool add_to_price_queue(Order *order) noexcept {
     uint32_t price = order->price;
@@ -159,7 +190,9 @@ private:
   }
 
 public:
-  OrderBook() : allocator_(MAX_ORDERS), orders_(MAX_ORDERS) {}
+  OrderBook(bufpool::BufferPool &allocator)
+      : max_orders_(MAX_ORDERS), orders_op_(max_orders_), orders_(max_orders_),
+        allocator_(allocator) {}
 
   void reset(uint32_t base_price, uint32_t tick_size, uint32_t window_size) {
     base_price_ = base_price;
@@ -170,15 +203,23 @@ public:
     best_ask_slot_ = window_size;
   }
 
-  bool add_order(order_id_t oid, uint32_t shares, uint32_t price,
-                 Side side) noexcept {
+  [[nodiscard]] std::expected<void, AddOrderError>
+  add_order(oid_t oid, uint32_t shares, uint32_t price, Side side) noexcept {
     if (orders_.find(oid) != nullptr) [[unlikely]] {
-      return false;
+      return std::unexpected(AddOrderError::DuplicateOrderId);
     }
 
-    Order *new_order = allocator_.allocate();
+    Order *new_order = orders_op_.get();
     if (new_order == nullptr) [[unlikely]] {
-      return false;
+      /* Probably not the best way to handle this.
+        I assume real systems would just alarm and exit.
+        For academic purposes only.    */
+      if (!grow()) [[unlikely]] {
+        // System is out of memory, terminate is the only viable option here.
+        std::terminate();
+      }
+      new_order = orders_op_.get();
+      assert(new_order);
     }
 
     new_order->order_num = oid;
@@ -189,16 +230,16 @@ public:
     new_order->prev = nullptr;
 
     if (!add_to_price_queue(new_order)) {
-      allocator_.deallocate(new_order);
-      return false;
+      orders_op_.restore(new_order);
+      return std::unexpected(AddOrderError::PriceOutOfWindow);
     }
 
     orders_.insert(oid, new_order);
 
-    return true;
+    return {};
   }
 
-  bool cancel_order(order_id_t oid) noexcept {
+  bool cancel_order(oid_t oid) noexcept {
     Order *order;
     if ((order = orders_.find(oid)) == nullptr) [[unlikely]] {
       return false;
@@ -210,11 +251,11 @@ public:
 
     assert(orders_.erase(oid));
 
-    allocator_.deallocate(order);
+    orders_op_.restore(order);
     return true;
   }
 
-  bool execute_order(order_id_t oid, uint32_t executed_shares) noexcept {
+  bool execute_order(oid_t oid, uint32_t executed_shares) noexcept {
     Order *order;
     if ((order = orders_.find(oid)) == nullptr) [[unlikely]] {
       return false;
@@ -235,11 +276,11 @@ public:
     return true;
   }
 
-  bool reduce_order(order_id_t oid, uint32_t cancelled_shares) noexcept {
+  bool reduce_order(oid_t oid, uint32_t cancelled_shares) noexcept {
     return execute_order(oid, cancelled_shares);
   }
 
-  Order *get_order_by_oid(order_id_t oid) {
+  Order *get_order_by_oid(oid_t oid) {
     Order *order;
     if ((order = orders_.find(oid)) == nullptr) [[unlikely]] {
       return nullptr;
