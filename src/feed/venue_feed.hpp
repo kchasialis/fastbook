@@ -1,8 +1,11 @@
 #pragma once
 
+#include "buffer_pool.hpp"
 #include "event_queue.hpp"
 #include "itch_parser.hpp"
 #include "length_prefix_framer.hpp"
+#include "logger.hpp"
+#include "threading.hpp"
 #include "transport.hpp"
 #include "types.hpp"
 #include <array>
@@ -68,21 +71,24 @@ public:
 
   void on_error(FramingError e) noexcept { (void)e; }
 
-  void run(uint32_t core) noexcept {
+  void run(uint32_t core, StartGate &gate) noexcept {
+    std::string tname = "feed_" + std::to_string(core);
     if (!pin_and_prioritize(pthread_self(), core)) {
-      std::cerr << "[DEBUG]: Failed to pin thread to core: " << core
-                << std::endl;
-      return;
+      LOG_ERROR("Failed to pin thread to core: {}", core);
+      goto failed;
     }
 
-    std::string tname = "bbuilder_" + std::to_string(core);
-    if (!pthread_setname_np(pthread_self(), tname.c_str()) != 0) {
-      std::cerr << "[DEBUG] BookBuilder::run(): Failed to set thread name"
-                << std::endl;
-      return;
+    if (pthread_setname_np(pthread_self(), tname.c_str()) != 0) {
+      LOG_ERROR("Failed to set thread name {} for core: {}", tname.c_str(),
+                core);
+      goto failed;
     }
 
     bufpool::thread_init();
+    logger::thread_init();
+
+    gate.ready.count_down();
+    gate.go.wait();
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
       auto buf = src_.next();
@@ -103,6 +109,12 @@ public:
       }
       framer_.feed(buf->bytes(), *this);
     }
+
+    return;
+
+  failed:
+    gate.failed.fetch_add(1, std::memory_order_relaxed);
+    gate.ready.count_down();
   }
 
   void stop() noexcept {

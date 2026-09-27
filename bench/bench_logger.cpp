@@ -204,7 +204,7 @@ int main(int argc, char **argv) {
 
   pin_to_core(1);
 
-  std::thread backend(logger::logger_thread);
+  std::jthread backend(logger::logger_thread);
   logger::thread_init();
 
   const double tsc_hz = measure_tsc_hz();
@@ -264,7 +264,7 @@ int main(int argc, char **argv) {
       },
       n_samples, pair_cost, samples);
 
-  logger::stop.store(true, std::memory_order_release);
+  backend.request_stop();
   backend.join();
 
   std::print(stdout,

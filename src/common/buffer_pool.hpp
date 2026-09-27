@@ -1,7 +1,6 @@
 #pragma once
 
 #include "treiber_stack.hpp"
-#include "utils.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>

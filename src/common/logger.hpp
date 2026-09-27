@@ -17,6 +17,7 @@
 #include <iostream>
 #include <iterator>
 #include <print>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <sys/mman.h>
@@ -121,7 +122,6 @@ struct alignas(std::hardware_destructive_interference_size) RingSlot {
 
 inline std::array<RingSlot, N_SLOTS> slots{};
 inline std::atomic<uint32_t> slots_so_far{0};
-inline std::atomic<bool> stop{false};
 
 inline thread_local RingSlot *log_slot = nullptr;
 
@@ -348,7 +348,7 @@ inline bool drain_and_log(std::vector<Record> &recs, std::string &out_buff,
   return !recs.empty();
 }
 
-inline void logger_thread() {
+inline void logger_thread(std::stop_token st) {
   std::vector<Record> recs;
   recs.reserve(LOG_RING_SIZE);
   std::string out_buff;
@@ -357,7 +357,7 @@ inline void logger_thread() {
   out.reserve(256);
   std::array<uint64_t, N_SLOTS> seen_dropped{};
 
-  while (!stop.load(std::memory_order_acquire)) {
+  while (!st.stop_requested()) {
     if (!drain_and_log(recs, out_buff, out, seen_dropped)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
