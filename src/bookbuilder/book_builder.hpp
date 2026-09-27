@@ -2,7 +2,9 @@
 
 #include "event_queue.hpp"
 #include "hash_map.hpp"
+#include "logger.hpp"
 #include "order_book.hpp"
+#include "threading.hpp"
 #include "types.hpp"
 #include <atomic>
 #include <cassert>
@@ -88,21 +90,23 @@ public:
     owned_books_.reserve(8192);
   }
 
-  void run(uint32_t core) {
+  void run(uint32_t core, StartGate &gate) {
+    std::string tname = "bbuilder_" + std::to_string(core);
     if (!pin_and_prioritize(pthread_self(), core)) {
-      std::cerr << "[DEBUG] BookBuilder::run(): Failed to pin thread at core: "
-                << core << std::endl;
-      return;
+      LOG_ERROR("Failed to pin thread at core: {}", core);
+      goto failed;
     }
 
-    std::string tname = "bbuilder_" + std::to_string(core);
-    if (!pthread_setname_np(pthread_self(), tname.c_str()) != 0) {
-      std::cerr << "[DEBUG] BookBuilder::run(): Failed to set thread name"
-                << std::endl;
-      return;
+    if (pthread_setname_np(pthread_self(), tname.c_str()) != 0) {
+      LOG_ERROR("Failed to set thread name {} for thread: {}", tname, core);
+      goto failed;
     }
 
     bufpool::thread_init();
+    logger::thread_init();
+
+    gate.ready.count_down();
+    gate.go.wait();
 
     while (!stop_.load(std::memory_order_relaxed)) {
       std::optional<MboEvent> mbo_opt;
@@ -134,6 +138,12 @@ public:
         break;
       }
     }
+
+    return;
+
+  failed:
+    gate.failed.fetch_add(1, std::memory_order_relaxed);
+    gate.ready.count_down();
   }
 
   void stop() { stop_.store(true, std::memory_order_relaxed); }

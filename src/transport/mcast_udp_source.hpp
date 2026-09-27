@@ -16,10 +16,9 @@
 #include <unistd.h>
 #include <utility>
 
-#include "fd_wrapper.hpp"
 #include "object_pool.hpp"
 #include "transport.hpp"
-#include "utils.hpp"
+#include "sys.hpp"
 
 class McastUDPSource {
 public:
@@ -100,7 +99,7 @@ private:
   }
 
   void release_range_(uint32_t from, uint32_t to) noexcept {
-    for (uint32_t j = from; j < to; ++j) {
+    for (uint32_t j = from; j < to; j++) {
       pool_.restore(batch_[j]);
     }
   }
