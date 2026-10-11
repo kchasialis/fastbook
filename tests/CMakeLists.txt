@@ -1,10 +1,11 @@
-add_executable(fastbook_tests test_spsc.cpp test_hashmap.cpp test_order_book.cpp test_feed_handler.cpp test_buffer_pool.cpp)
+add_executable(fastbook_tests test_spsc.cpp test_hashmap.cpp test_order_book.cpp test_feed_handler.cpp test_buffer_pool.cpp test_two_tier_levels.cpp)
 
 target_link_libraries(fastbook_tests
         PRIVATE fastbook_options
         PRIVATE orderbook
         PRIVATE common
         PRIVATE feed
+        PRIVATE pipeline
         PRIVATE GTest::gtest_main
 )
 

@@ -13,21 +13,20 @@
 
 class BookBuilder {
 private:
+  using Book = OrderBook<8, 256>;
+
   Consumer consumer_;
   std::atomic<bool> stop_;
   uint64_t msg_count_{0};
-  HashMap<instrument_t, OrderBook *> instrument_map_;
+  HashMap<instrument_t, Book *> instrument_map_;
   bufpool::BufferPool &bp_ref_;
-  std::vector<std::unique_ptr<OrderBook>> owned_books_; // RAII
+  std::vector<std::unique_ptr<Book>> owned_books_; // RAII
 
-  OrderBook *get_or_init_book(instrument_t instr, uint32_t price) noexcept {
-    OrderBook *book = instrument_map_.find(instr);
+  Book *get_or_init_book(instrument_t instr) noexcept {
+    Book *book = instrument_map_.find(instr);
     if (book == nullptr) [[unlikely]] {
-      auto owned = std::make_unique<OrderBook>(bp_ref_);
+      auto owned = std::make_unique<Book>(bp_ref_);
       book = owned.get();
-      // need to fix that with actual configs fetched offline.
-      uint32_t base = price > 100 ? price - 100 : 0;
-      book->reset(base, 1, 1024);
       owned_books_.push_back(std::move(owned));
       [[maybe_unused]] bool inserted = instrument_map_.insert(instr, book);
       assert(inserted);
@@ -36,51 +35,51 @@ private:
   }
 
   void add_order_handler(const MboEvent &mbo) noexcept {
-    OrderBook *book = get_or_init_book(mbo.instrument, mbo.price);
+    Book *book = get_or_init_book(mbo.instrument);
     auto exp = book->add_order(mbo.oid, mbo.qty, mbo.price, mbo.side);
     if (!exp.has_value()) [[unlikely]] {
-      // TODO(kostas): Add proper handling here.
-      std::terminate();
-      // switch (exp.error()) {
-      // case OrderBook::AddOrderError::DuplicateOrderId: {
-      // }
-      // case OrderBook::AddOrderError::PriceOutOfWindow: {
-      //   std::terminate();
-      // }
+      if (exp.error() == Book::AddOrderError::DuplicateOrderId) {
+        LOG_WARN("add dropped, duplicate oid: instrument={} oid={}",
+                 mbo.instrument, mbo.oid);
+      } else {
+        LOG_WARN("add dropped, levels full: instrument={} oid={} price={}",
+                 mbo.instrument, mbo.oid, mbo.price);
+      }
     }
   }
 
   void cancel_order_handler(const MboEvent &mbo) noexcept {
-    OrderBook *book = instrument_map_.find(mbo.instrument);
-    if (book == nullptr) [[unlikely]] {
-      return;
+    Book *book = instrument_map_.find(mbo.instrument);
+    if (book == nullptr || !book->reduce_order(mbo.oid, mbo.qty)) [[unlikely]] {
+      LOG_DEBUG("cancel dropped, unknown oid: instrument={} oid={}",
+                mbo.instrument, mbo.oid);
     }
-    book->reduce_order(mbo.oid, mbo.qty);
   }
 
   void execute_order_handler(const MboEvent &mbo) noexcept {
-    OrderBook *book = instrument_map_.find(mbo.instrument);
-    if (book == nullptr) [[unlikely]] {
-      return;
+    Book *book = instrument_map_.find(mbo.instrument);
+    if (book == nullptr || !book->execute_order(mbo.oid, mbo.qty))
+        [[unlikely]] {
+      LOG_DEBUG("execute dropped, unknown oid: instrument={} oid={}",
+                mbo.instrument, mbo.oid);
     }
-    book->execute_order(mbo.oid, mbo.qty);
   }
 
   void delete_order_handler(const MboEvent &mbo) noexcept {
-    OrderBook *book = instrument_map_.find(mbo.instrument);
-    if (book == nullptr) [[unlikely]] {
-      return;
+    Book *book = instrument_map_.find(mbo.instrument);
+    if (book == nullptr || !book->cancel_order(mbo.oid)) [[unlikely]] {
+      LOG_DEBUG("delete dropped, unknown oid: instrument={} oid={}",
+                mbo.instrument, mbo.oid);
     }
-    book->cancel_order(mbo.oid);
   }
 
   void replace_order_handler(const MboEvent &mbo) noexcept {
-    OrderBook *book = instrument_map_.find(mbo.instrument);
-    if (book == nullptr) [[unlikely]] {
-      return;
+    Book *book = instrument_map_.find(mbo.instrument);
+    if (book == nullptr || !book->cancel_order(mbo.orig_oid)) [[unlikely]] {
+      LOG_DEBUG("replace, unknown orig oid: instrument={} oid={}",
+                mbo.instrument, mbo.orig_oid);
     }
-    book->cancel_order(mbo.orig_oid);
-    book->add_order(mbo.oid, mbo.qty, mbo.price, mbo.side);
+    add_order_handler(mbo);
   }
 
 public:
@@ -148,5 +147,5 @@ public:
 
   void stop() { stop_.store(true, std::memory_order_relaxed); }
 
-  uint64_t message_count() const { return msg_count_; }
+  [[nodiscard]] uint64_t message_count() const { return msg_count_; }
 };

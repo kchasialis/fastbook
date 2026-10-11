@@ -24,6 +24,13 @@ static std::vector<uint64_t> make_ob_pool() {
 
 static const std::vector<uint64_t> OB_POOL = make_ob_pool();
 
+// OrderBook only draws from this when its order slab grows; one instance
+// serves every benchmark in the binary.
+static bufpool::BufferPool &buffer_pool() {
+  static bufpool::BufferPool p;
+  return p;
+}
+
 static uint32_t pool_price(size_t idx) {
   return 100 + static_cast<uint32_t>(OB_POOL[idx] % 512);
 }
@@ -90,7 +97,7 @@ public:
 static void BM_OrderBook_SteadyState(benchmark::State &state) {
   pin_to_core(0);
 
-  OrderBook book;
+  OrderBook book{buffer_pool()};
   book.reset(100, 1, 1024);
   for (size_t i = 0; i < OB_LIVE_COUNT; i++) {
     book.add_order(OB_POOL[i], 100, pool_price(i), Side::BID);
@@ -110,7 +117,7 @@ BENCHMARK(BM_OrderBook_SteadyState);
 static void BM_OrderBook_BestPrice(benchmark::State &state) {
   pin_to_core(0);
 
-  OrderBook book;
+  OrderBook book{buffer_pool()};
   book.reset(100, 1, 1024);
   for (size_t i = 0; i < OB_LIVE_COUNT; i++) {
     book.add_order(OB_POOL[i], 100, pool_price(i), Side::BID);
