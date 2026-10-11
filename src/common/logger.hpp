@@ -123,7 +123,7 @@ struct alignas(std::hardware_destructive_interference_size) RingSlot {
 inline std::array<RingSlot, N_SLOTS> slots{};
 inline std::atomic<uint32_t> slots_so_far{0};
 
-inline thread_local RingSlot *log_slot = nullptr;
+constinit inline thread_local RingSlot *log_slot = nullptr;
 
 inline void thread_init() {
   if (log_slot) {
@@ -188,7 +188,7 @@ struct LogMetadata {
     }                                                                          \
   } while (0)
 
-template <typename T> void read_one(const std::byte *&payload, T &a) {
+template <typename T> void read_arg(const std::byte *&payload, T &a) {
   if constexpr (std::is_same_v<T, std::string_view>) {
     StrLen len;
     std::memcpy(&len, payload, sizeof(len));
@@ -201,7 +201,7 @@ template <typename T> void read_one(const std::byte *&payload, T &a) {
   }
 }
 
-template <typename T> void write_one(std::byte *payload, size_t &off, T a) {
+template <typename T> void write_arg(std::byte *payload, size_t &off, T a) {
   if constexpr (std::is_same_v<T, std::string_view>) {
     StrLen len = static_cast<StrLen>(
         std::min(a.size(), PAYLOAD_BYTES - off - sizeof(StrLen)));
@@ -244,7 +244,7 @@ void emit(const LogMetadata *meta, std::format_string<Args...> fmt,
   record->hdr.meta = meta;
 
   [[maybe_unused]] size_t off = 0;
-  (write_one(record->payload, off, static_cast<Stored_t<Args>>(args)), ...);
+  (write_arg(record->payload, off, static_cast<Stored_t<Args>>(args)), ...);
 
   prod.commit();
 }
@@ -443,7 +443,7 @@ void decode(const std::byte *payload, std::string &out) {
 
   std::tuple<Stored...> args;
 
-  std::apply([&](auto &...a) { (read_one(payload, a), ...); }, args);
+  std::apply([&](auto &...a) { (read_arg(payload, a), ...); }, args);
 
   [&]<size_t... I>(std::index_sequence<I...>) {
     ((out += segs[I], format_arg(std::get<I>(args), out)), ...);

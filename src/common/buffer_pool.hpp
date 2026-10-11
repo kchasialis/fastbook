@@ -90,7 +90,7 @@ struct alignas(64) Chunk {
     }
 
     run_class[first_free] = cls;
-    char *base = (char *)this + first_free * RUN_SIZE;
+    char *base = reinterpret_cast<char *>(this) + first_free * RUN_SIZE;
     bmap.set_bit(first_free);
     --free_runs;
 
@@ -102,11 +102,11 @@ static_assert(alignof(Chunk) >= alignof(std::max_align_t));
 
 /* For this to work, ptr must be inside a CHUNK_SIZE-aligned Chunk. */
 inline std::pair<Chunk *, uint8_t> base_cls_from_ptr(void *ptr) noexcept {
-  uintptr_t ptr_n = reinterpret_cast<uintptr_t>(ptr);
+  auto ptr_n = reinterpret_cast<uintptr_t>(ptr);
   uintptr_t base = ptr_n & ~(CHUNK_SIZE - 1);
   size_t off = ptr_n - base;
   size_t run = off >> RUN_SHIFT;
-  Chunk *cnk = reinterpret_cast<Chunk *>(base);
+  auto *cnk = reinterpret_cast<Chunk *>(base);
 
   return {cnk, cnk->run_class[run]};
 }
@@ -233,7 +233,7 @@ public:
   friend void flush_magazine(void *);
 };
 
-inline thread_local TLMagazine magazine = {};
+constinit inline thread_local TLMagazine magazine = {};
 
 inline void flush_magazine(void *args) {
   TLMagazine *mag = reinterpret_cast<TLMagazine *>(args);
@@ -341,7 +341,8 @@ private:
   bool refill(uint8_t cls) noexcept {
     Chunk *free_chunk = chunks_with_free_runs.pop();
     if (!free_chunk) {
-      if (!(free_chunk = allocate_new_chunk(CHUNK_SIZE))) [[unlikely]] {
+      free_chunk = allocate_new_chunk(CHUNK_SIZE);
+      if (!free_chunk) [[unlikely]] {
         return false;
       }
     }
