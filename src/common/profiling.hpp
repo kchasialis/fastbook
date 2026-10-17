@@ -158,14 +158,22 @@ public:
       return;
     }
 
+    double p25 = percentile<25.0>() * scale;
+    double p50 = percentile<50.0>() * scale;
+    double p75 = percentile<75.0>() * scale;
+    double iqr = p75 - p25;
+    double iqr_over_p50 =
+        p50 > 0.0 ? iqr / p50 : std::numeric_limits<double>::infinity();
+
     double min = std::round(static_cast<double>(min_value) * scale);
-    double p50 = std::round(percentile<50.0>() * scale);
     double p99 = std::round(percentile<99.0>() * scale);
     double p99_9 = std::round(percentile<99.9>() * scale);
     double max = std::round(static_cast<double>(max_value) * scale);
 
-    LOG_INFO("{}: n={}, min={}, p50={}, p99={}, p99_9={}, max={}", name,
-             total_samples, min, p50, p99, p99_9, max);
+    LOG_INFO("{}: n={}, min={}, p50={}, p99={}, p99_9={}, max={}, iqr={}, "
+             "iqr/p50={}",
+             name, total_samples, min, std::round(p50), p99, p99_9, max,
+             std::round(iqr), std::round(iqr_over_p50 * 1000.0) / 1000.0);
   }
 };
 
