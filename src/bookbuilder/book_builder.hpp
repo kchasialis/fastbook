@@ -1,7 +1,7 @@
 #pragma once
 
 #include "event_queue.hpp"
-#include "hash_map.hpp"
+#include "linear_probing_table.hpp"
 #include "logger.hpp"
 #include "order_book.hpp"
 #include "threading.hpp"
@@ -25,7 +25,7 @@ private:
   Consumer consumer_;
   std::atomic<bool> stop_;
   Stats stats_;
-  HashMap<instrument_t, Book *> instrument_map_;
+  LinearProbingTable<instrument_t, Book *> instrument_map_;
   bufpool::BufferPool &bp_ref_;
   std::vector<std::unique_ptr<Book>> owned_books_; // RAII
 

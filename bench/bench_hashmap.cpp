@@ -1,5 +1,5 @@
 #include "bench_utils.hpp"
-#include "hash_map.hpp"
+#include "linear_probing_table.hpp"
 #include <benchmark/benchmark.h>
 #include <ctime>
 #include <random>
@@ -22,8 +22,8 @@ static const std::vector<uint64_t> POOL = make_pool();
 
 static int dummy = 0;
 
-static void BM_HashMap_Find(benchmark::State &state) {
-  HashMap<uint64_t, int *> map(POOL_SIZE);
+static void BM_LinearProbingTable_Find(benchmark::State &state) {
+  LinearProbingTable<uint64_t, int *> map(POOL_SIZE);
   for (size_t i = 0; i < LIVE_COUNT; i++) {
     map.insert(POOL[i], &dummy);
   }
@@ -34,7 +34,7 @@ static void BM_HashMap_Find(benchmark::State &state) {
     i++;
   }
 }
-BENCHMARK(BM_HashMap_Find);
+BENCHMARK(BM_LinearProbingTable_Find);
 
 static void BM_UnorderedMap_Find(benchmark::State &state) {
   std::unordered_map<uint64_t, int *> map;
@@ -51,8 +51,8 @@ static void BM_UnorderedMap_Find(benchmark::State &state) {
 }
 BENCHMARK(BM_UnorderedMap_Find);
 
-static void BM_HashMap_SteadyState(benchmark::State &state) {
-  HashMap<uint64_t, int *> map(POOL_SIZE);
+static void BM_LinearProbingTable_SteadyState(benchmark::State &state) {
+  LinearProbingTable<uint64_t, int *> map(POOL_SIZE);
   for (size_t i = 0; i < LIVE_COUNT; i++) {
     map.insert(POOL[i], &dummy);
   }
@@ -65,7 +65,7 @@ static void BM_HashMap_SteadyState(benchmark::State &state) {
   }
   benchmark::DoNotOptimize(i);
 }
-BENCHMARK(BM_HashMap_SteadyState);
+BENCHMARK(BM_LinearProbingTable_SteadyState);
 
 static void BM_UnorderedMap_SteadyState(benchmark::State &state) {
   std::unordered_map<uint64_t, int *> map;

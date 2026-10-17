@@ -1,7 +1,7 @@
 #pragma once
 
 #include "buffer_pool.hpp"
-#include "hash_map.hpp"
+#include "linear_probing_table.hpp"
 #include "object_pool.hpp"
 #include "two_tier_levels.hpp"
 #include "types.hpp"
@@ -35,7 +35,7 @@ private:
   TwoTierLevels<Side::ASK, K, ColdCap> asks_;
   uint32_t max_orders_{};
   ObjectPool<Order> orders_op_;
-  HashMap<oid_t, Order *> orders_;
+  LinearProbingTable<oid_t, Order *> orders_;
   bufpool::BufferPool &allocator_;
 
   bool grow() noexcept {

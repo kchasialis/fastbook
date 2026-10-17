@@ -1,7 +1,7 @@
 #pragma once
 
 #include "buffer_pool.hpp"
-#include "hash_map.hpp"
+#include "linear_probing_table.hpp"
 #include "object_pool.hpp"
 #include "types.hpp"
 #include <cassert>
@@ -48,7 +48,7 @@ private:
   uint32_t best_ask_slot_;
   uint32_t max_orders_;
   ObjectPool<Order> orders_op_;
-  HashMap<oid_t, Order *> orders_;
+  LinearProbingTable<oid_t, Order *> orders_;
   bufpool::BufferPool &allocator_;
 
   bool grow() noexcept {

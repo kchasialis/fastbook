@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "hash_map.hpp"
+#include "linear_probing_table.hpp"
 
 #include <array>
 #include <cstdint>
@@ -14,44 +14,48 @@ struct Node {
   int val;
 };
 
-using Map = HashMap<uint64_t, Node *>;
+using Map = LinearProbingTable<uint64_t, Node *>;
 
-class HashMapTest : public ::testing::Test {
+class LinearProbingTableTest : public ::testing::Test {
 protected:
   static constexpr size_t CAPACITY = 16;
   Map map{CAPACITY};
   Node a{1}, b{2}, c{3};
 };
 
-TEST_F(HashMapTest, FindMissOnEmpty) { EXPECT_EQ(map.find(42), nullptr); }
+TEST_F(LinearProbingTableTest, FindMissOnEmpty) {
+  EXPECT_EQ(map.find(42), nullptr);
+}
 
-TEST_F(HashMapTest, InsertAndFind) {
+TEST_F(LinearProbingTableTest, InsertAndFind) {
   EXPECT_TRUE(map.insert(1, &a));
   EXPECT_EQ(map.find(1), &a);
 }
 
-TEST_F(HashMapTest, InsertDuplicateReturnsFalse) {
+TEST_F(LinearProbingTableTest, InsertDuplicateReturnsFalse) {
   map.insert(1, &a);
   EXPECT_FALSE(map.insert(1, &b));
   EXPECT_EQ(map.find(1), &a);
 }
 
-TEST_F(HashMapTest, EraseRemovesKey) {
+TEST_F(LinearProbingTableTest, EraseRemovesKey) {
   map.insert(1, &a);
   EXPECT_TRUE(map.erase(1));
   EXPECT_EQ(map.find(1), nullptr);
 }
 
-TEST_F(HashMapTest, EraseMissingReturnsFalse) { EXPECT_FALSE(map.erase(99)); }
+TEST_F(LinearProbingTableTest, EraseMissingReturnsFalse) {
+  EXPECT_FALSE(map.erase(99));
+}
 
-TEST_F(HashMapTest, InsertAfterErase) {
+TEST_F(LinearProbingTableTest, InsertAfterErase) {
   map.insert(1, &a);
   map.erase(1);
   EXPECT_TRUE(map.insert(1, &b));
   EXPECT_EQ(map.find(1), &b);
 }
 
-TEST_F(HashMapTest, MultipleKeys) {
+TEST_F(LinearProbingTableTest, MultipleKeys) {
   map.insert(1, &a);
   map.insert(2, &b);
   map.insert(3, &c);
@@ -60,7 +64,7 @@ TEST_F(HashMapTest, MultipleKeys) {
   EXPECT_EQ(map.find(3), &c);
 }
 
-TEST_F(HashMapTest, EraseOneDoesNotAffectOthers) {
+TEST_F(LinearProbingTableTest, EraseOneDoesNotAffectOthers) {
   map.insert(1, &a);
   map.insert(2, &b);
   map.erase(1);
@@ -68,7 +72,7 @@ TEST_F(HashMapTest, EraseOneDoesNotAffectOthers) {
   EXPECT_EQ(map.find(2), &b);
 }
 
-TEST_F(HashMapTest, EraseDoesNotBlockProbe) {
+TEST_F(LinearProbingTableTest, EraseDoesNotBlockProbe) {
   Map small{4};
   Node x{10}, y{20};
 
@@ -86,9 +90,9 @@ template <int Bits> struct BoxHash {
 };
 
 template <EraseMode M, int Bits>
-using BoxMap = HashMap<uint64_t, Node *, BoxHash<Bits>, M>;
+using BoxMap = LinearProbingTable<uint64_t, Node *, BoxHash<Bits>, M>;
 
-template <class Mode> class HashMapEraseTest : public ::testing::Test {
+template <class Mode> class LinearProbingEraseTest : public ::testing::Test {
 protected:
   static constexpr uint64_t N_KEYS = 256;
   std::array<Node, N_KEYS> nodes{};
@@ -110,9 +114,9 @@ protected:
 using EraseModes = ::testing::Types<
     std::integral_constant<EraseMode, EraseMode::BackwardShift>,
     std::integral_constant<EraseMode, EraseMode::Tombstone>>;
-TYPED_TEST_SUITE(HashMapEraseTest, EraseModes);
+TYPED_TEST_SUITE(LinearProbingEraseTest, EraseModes);
 
-TYPED_TEST(HashMapEraseTest, PushedKeyMovesBack) {
+TYPED_TEST(LinearProbingEraseTest, PushedKeyMovesBack) {
   this->insert_all({2, 10, 3, 5});
 
   EXPECT_TRUE(this->map.erase(10));
@@ -120,7 +124,7 @@ TYPED_TEST(HashMapEraseTest, PushedKeyMovesBack) {
   this->expect_found({2, 3, 5});
 }
 
-TYPED_TEST(HashMapEraseTest, KeyThatNeverPassedTheEmptyBoxStays) {
+TYPED_TEST(LinearProbingEraseTest, KeyThatNeverPassedTheEmptyBoxStays) {
   this->insert_all({2, 10, 4, 12, 11});
 
   EXPECT_TRUE(this->map.erase(10));
@@ -128,7 +132,7 @@ TYPED_TEST(HashMapEraseTest, KeyThatNeverPassedTheEmptyBoxStays) {
   this->expect_found({2, 4, 12, 11});
 }
 
-TYPED_TEST(HashMapEraseTest, ShiftAcrossTheEnd) {
+TYPED_TEST(LinearProbingEraseTest, ShiftAcrossTheEnd) {
   this->insert_all({6, 14, 22, 1});
 
   EXPECT_TRUE(this->map.erase(14));
@@ -140,7 +144,7 @@ TYPED_TEST(HashMapEraseTest, ShiftAcrossTheEnd) {
   EXPECT_EQ(this->map.find(14), nullptr);
 }
 
-TYPED_TEST(HashMapEraseTest, EraseInLastBox) {
+TYPED_TEST(LinearProbingEraseTest, EraseInLastBox) {
   this->insert_all({7, 15});
 
   EXPECT_TRUE(this->map.erase(7));
@@ -148,7 +152,7 @@ TYPED_TEST(HashMapEraseTest, EraseInLastBox) {
   this->expect_found({15});
 }
 
-TYPED_TEST(HashMapEraseTest, EraseFromLongRun) {
+TYPED_TEST(LinearProbingEraseTest, EraseFromLongRun) {
   this->insert_all({0, 8, 16, 24, 32, 40});
 
   EXPECT_TRUE(this->map.erase(0));
@@ -160,7 +164,7 @@ TYPED_TEST(HashMapEraseTest, EraseFromLongRun) {
   EXPECT_EQ(this->map.find(24), nullptr);
 }
 
-TYPED_TEST(HashMapEraseTest, EraseFromFullTable) {
+TYPED_TEST(LinearProbingEraseTest, EraseFromFullTable) {
   this->insert_all({0, 8, 16, 24, 32, 40, 48, 56});
 
   EXPECT_TRUE(this->map.erase(16));
@@ -171,7 +175,7 @@ TYPED_TEST(HashMapEraseTest, EraseFromFullTable) {
   this->expect_found({0, 8, 16, 24, 32, 40, 48, 56});
 }
 
-TYPED_TEST(HashMapEraseTest, ReinsertAfterErase) {
+TYPED_TEST(LinearProbingEraseTest, ReinsertAfterErase) {
   this->insert_all({3, 11, 19});
 
   EXPECT_TRUE(this->map.erase(11));
@@ -180,7 +184,7 @@ TYPED_TEST(HashMapEraseTest, ReinsertAfterErase) {
   EXPECT_FALSE(this->map.insert(19, &this->nodes[19]));
 }
 
-TYPED_TEST(HashMapEraseTest, MatchesUnorderedMapUnderRandomOps) {
+TYPED_TEST(LinearProbingEraseTest, MatchesUnorderedMapUnderRandomOps) {
   constexpr size_t MAX_LIVE = 48;
   BoxMap<TypeParam::value, 6> big{32};
   std::unordered_map<uint64_t, Node *> ref;

@@ -1,5 +1,5 @@
 #include "bench_utils.hpp"
-#include "hash_map.hpp"
+#include "linear_probing_table.hpp"
 #include "order_book.hpp"
 #include <algorithm>
 #include <benchmark/benchmark.h>

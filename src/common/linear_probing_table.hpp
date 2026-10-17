@@ -23,7 +23,7 @@ enum class EraseMode : uint8_t { BackwardShift, Tombstone };
 
 template <TrivialKey K, HashNode V, typename Hash = FibHash<K>,
           EraseMode Mode = EraseMode::BackwardShift>
-class HashMap {
+class LinearProbingTable {
 private:
   std::unique_ptr<std::pair<K, V>[]> data_;
   size_t size_;
@@ -67,19 +67,18 @@ private:
   }
 
 public:
-  HashMap(size_t capacity)
+  LinearProbingTable(size_t capacity)
       : data_(new std::pair<K, V>[capacity << 1]()), size_(0),
-        capacity_(capacity << 1),
-        shift_(std::numeric_limits<size_t>::digits -
-               std::countr_zero(capacity_)) {
+        capacity_(capacity << 1), shift_(std::numeric_limits<size_t>::digits -
+                                         std::countr_zero(capacity_)) {
     assert((capacity_ & (capacity_ - 1)) == 0);
   }
-  ~HashMap() = default;
+  ~LinearProbingTable() = default;
 
-  HashMap(const HashMap &) = delete;
-  HashMap(HashMap &&) = delete;
-  HashMap &operator=(const HashMap &) = delete;
-  HashMap &operator=(HashMap &&) = delete;
+  LinearProbingTable(const LinearProbingTable &) = delete;
+  LinearProbingTable(LinearProbingTable &&) = delete;
+  LinearProbingTable &operator=(const LinearProbingTable &) = delete;
+  LinearProbingTable &operator=(LinearProbingTable &&) = delete;
 
   bool insert(K key, V value) noexcept {
     size_t pos = get_pos(key);
@@ -166,24 +165,24 @@ public:
 
   bool rehash(size_t new_capacity) noexcept {
     try {
-      HashMap new_hashmap(new_capacity);
+      LinearProbingTable new_table(new_capacity);
 
       for (size_t i = 0; i < capacity_; i++) {
         if (is_empty(i) || is_deleted(i)) {
           continue;
         }
         [[maybe_unused]] bool ok =
-            new_hashmap.insert(this->data_[i].first, this->data_[i].second);
+            new_table.insert(this->data_[i].first, this->data_[i].second);
         assert(ok);
       }
 
-      std::swap(this->data_, new_hashmap.data_);
-      std::swap(this->capacity_, new_hashmap.capacity_);
-      std::swap(this->shift_, new_hashmap.shift_);
+      std::swap(this->data_, new_table.data_);
+      std::swap(this->capacity_, new_table.capacity_);
+      std::swap(this->shift_, new_table.shift_);
 
       return true;
     } catch (const std::bad_alloc &ba) {
-      LOG_ERROR("HashMap::rehash exception: {}", ba.what());
+      LOG_ERROR("LinearProbingTable::rehash exception: {}", ba.what());
       return false;
     }
   }
