@@ -5,7 +5,9 @@
 #include <array>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <random>
+#include <type_traits>
 #include <unordered_map>
 
 struct Node {
@@ -71,26 +73,26 @@ TEST_F(HashMapTest, EraseDoesNotBlockProbe) {
   Node x{10}, y{20};
 
   small.insert(10, &x);
-  small.insert(10 + 8, &y);
+  small.insert(23, &y);
   small.erase(10);
   EXPECT_EQ(small.find(10), nullptr);
-  EXPECT_EQ(small.find(10 + 8), &y);
+  EXPECT_EQ(small.find(23), &y);
 }
 
-struct IdentityHash {
-  size_t operator()(uint64_t key) const noexcept { return key; }
+template <int Bits> struct BoxHash {
+  size_t operator()(uint64_t key) const noexcept {
+    return key << (std::numeric_limits<size_t>::digits - Bits);
+  }
 };
 
-using ShiftMap =
-    HashMap<uint64_t, Node *, IdentityHash, EraseMode::BackwardShift>;
-using TombstoneMap =
-    HashMap<uint64_t, Node *, IdentityHash, EraseMode::Tombstone>;
+template <EraseMode M, int Bits>
+using BoxMap = HashMap<uint64_t, Node *, BoxHash<Bits>, M>;
 
-template <class M> class HashMapEraseTest : public ::testing::Test {
+template <class Mode> class HashMapEraseTest : public ::testing::Test {
 protected:
   static constexpr uint64_t N_KEYS = 256;
   std::array<Node, N_KEYS> nodes{};
-  M map{4};
+  BoxMap<Mode::value, 3> map{4};
 
   void insert_all(std::initializer_list<uint64_t> keys) {
     for (uint64_t key : keys) {
@@ -105,7 +107,9 @@ protected:
   }
 };
 
-using EraseModes = ::testing::Types<ShiftMap, TombstoneMap>;
+using EraseModes = ::testing::Types<
+    std::integral_constant<EraseMode, EraseMode::BackwardShift>,
+    std::integral_constant<EraseMode, EraseMode::Tombstone>>;
 TYPED_TEST_SUITE(HashMapEraseTest, EraseModes);
 
 TYPED_TEST(HashMapEraseTest, PushedKeyMovesBack) {
@@ -178,7 +182,7 @@ TYPED_TEST(HashMapEraseTest, ReinsertAfterErase) {
 
 TYPED_TEST(HashMapEraseTest, MatchesUnorderedMapUnderRandomOps) {
   constexpr size_t MAX_LIVE = 48;
-  TypeParam big{32};
+  BoxMap<TypeParam::value, 6> big{32};
   std::unordered_map<uint64_t, Node *> ref;
   std::mt19937_64 rng(42);
 

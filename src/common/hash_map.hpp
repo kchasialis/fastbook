@@ -1,8 +1,10 @@
 #pragma once
 
 #include "logger.hpp"
+#include <bit>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <type_traits>
 #include <utility>
@@ -26,10 +28,11 @@ private:
   std::unique_ptr<std::pair<K, V>[]> data_;
   size_t size_;
   size_t capacity_;
+  int shift_;
   Hash hash_;
 
   size_t hash(K key) const noexcept { return hash_(key); }
-  size_t get_pos(K key) const noexcept { return hash(key) & (capacity_ - 1); }
+  size_t get_pos(K key) const noexcept { return hash(key) >> shift_; }
 
   bool is_empty(size_t slot) const noexcept {
     return data_[slot].second == nullptr;
@@ -66,7 +69,9 @@ private:
 public:
   HashMap(size_t capacity)
       : data_(new std::pair<K, V>[capacity << 1]()), size_(0),
-        capacity_(capacity << 1) {
+        capacity_(capacity << 1),
+        shift_(std::numeric_limits<size_t>::digits -
+               std::countr_zero(capacity_)) {
     assert((capacity_ & (capacity_ - 1)) == 0);
   }
   ~HashMap() = default;
@@ -174,6 +179,7 @@ public:
 
       std::swap(this->data_, new_hashmap.data_);
       std::swap(this->capacity_, new_hashmap.capacity_);
+      std::swap(this->shift_, new_hashmap.shift_);
 
       return true;
     } catch (const std::bad_alloc &ba) {

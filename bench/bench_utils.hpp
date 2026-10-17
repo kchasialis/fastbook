@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
-#include <immintrin.h>
+#include <x86intrin.h>
 #include <vector>
 
 #ifdef __APPLE__
