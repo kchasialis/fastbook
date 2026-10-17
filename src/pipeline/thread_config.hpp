@@ -1,6 +1,7 @@
 #pragma once
 
 #include "event_queue.hpp"
+#include "threading.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -17,9 +18,8 @@
 #include <unistd.h>
 #include <vector>
 
-// Which core each hot thread is pinned to. File format, one entry per line:
-//
-//   # comment
+//   Example config file: (which module maps to which thread)
+//   sched: fifo          (fifo | normal, optional, defaults to fifo)
 //   feed: 2
 //   builder: 3
 //   builder: 4
@@ -29,6 +29,7 @@
 struct ThreadConfig {
   uint32_t feed_core{};
   std::array<uint32_t, N_SHARDS> builder_cores{};
+  SchedPolicy sched{SchedPolicy::FIFO};
 
   static ThreadConfig load(const std::filesystem::path &path) {
     std::ifstream file(path);
@@ -48,6 +49,7 @@ struct ThreadConfig {
     };
 
     std::optional<uint32_t> feed;
+    std::optional<SchedPolicy> sched;
     std::vector<uint32_t> builders;
     builders.reserve(N_SHARDS);
 
@@ -67,6 +69,22 @@ struct ThreadConfig {
       }
       std::string_view role = trim(entry.substr(0, colon));
       std::string_view value = trim(entry.substr(colon + 1));
+
+      if (role == "sched") {
+        if (sched.has_value()) {
+          throw fail(lineno, "duplicate 'sched' entry");
+        }
+        if (value == "fifo") {
+          sched = SchedPolicy::FIFO;
+        } else if (value == "normal") {
+          sched = SchedPolicy::NORMAL;
+        } else {
+          throw fail(lineno, std::format("invalid sched '{}', expected 'fifo' "
+                                         "or 'normal'",
+                                         value));
+        }
+        continue;
+      }
 
       uint32_t core{};
       const char *end = value.data() + value.size();
@@ -88,8 +106,8 @@ struct ThreadConfig {
         }
         builders.push_back(core);
       } else {
-        throw fail(lineno, std::format("unknown role '{}', expected 'feed' or "
-                                       "'builder'",
+        throw fail(lineno, std::format("unknown role '{}', expected 'feed', "
+                                       "'builder' or 'sched'",
                                        role));
       }
     }
@@ -109,6 +127,7 @@ struct ThreadConfig {
     ThreadConfig cfg;
     cfg.feed_core = *feed;
     std::ranges::copy(builders, cfg.builder_cores.begin());
+    cfg.sched = sched.value_or(SchedPolicy::FIFO);
     return cfg;
   }
 

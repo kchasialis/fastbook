@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 #include <expected>
@@ -22,7 +23,8 @@ private:
   size_t length_;
 
 public:
-  static constexpr bool messages_may_straddle = false;
+  static constexpr bool messages_may_straddle = true;
+  static constexpr size_t SLICE_SIZE = 1 << 20;
 
   class Buffer {
     std::span<const std::byte> bytes_;
@@ -81,8 +83,9 @@ public:
       return std::unexpected(Status::Eof);
     }
 
-    Buffer b{remaining_};
-    remaining_ = {};
+    const size_t n = std::min(remaining_.size(), SLICE_SIZE);
+    Buffer b{remaining_.first(n)};
+    remaining_ = remaining_.subspan(n);
 
     return b;
   }

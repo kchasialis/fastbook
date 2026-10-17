@@ -32,6 +32,15 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "devbox",
+      "displayName": "Release, 2-core dev box",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/devbox",
+      "cacheVariables": {
+        "FASTBOOK_N_SHARDS": "1"
+      }
     }
   ],
   "buildPresets": [
@@ -42,6 +51,10 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "devbox",
+      "configurePreset": "devbox"
     }
   ],
   "testPresets": [

@@ -21,6 +21,9 @@ target_compile_options(fastbook_options INTERFACE
         -Wnull-dereference
 )
 
+set(FASTBOOK_N_SHARDS 4 CACHE STRING "Number of book builder shards (power of 2)")
+target_compile_definitions(fastbook_options INTERFACE FASTBOOK_N_SHARDS=${FASTBOOK_N_SHARDS})
+
 option(ENABLE_ASAN  "Enable AddressSanitizer"        OFF)
 option(ENABLE_TSAN  "Enable ThreadSanitizer"         OFF)
 option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)

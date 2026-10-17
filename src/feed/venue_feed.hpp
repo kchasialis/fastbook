@@ -47,12 +47,14 @@ private:
   std::vector<Producer> producers_;
   F framer_;
   std::atomic<bool> stop_requested_;
+  std::atomic<bool> finished_;
+  uint64_t queue_full_{0};
   bufpool::BufferPool &bp_ref_;
 
 public:
   VenueFeed(Src &src, std::array<Queue, N_SHARDS> &queues,
             bufpool::BufferPool &bp_ref)
-      : src_(src), stop_requested_(false), bp_ref_(bp_ref) {
+      : src_(src), stop_requested_(false), finished_(false), bp_ref_(bp_ref) {
     static_assert(MessageSink<VenueFeed>);
     static_assert(EventSink<VenueFeed>);
 
@@ -62,18 +64,28 @@ public:
     }
   }
 
-  void on_event(const MboEvent &e) {
+  void on_event(const MboEvent &e) noexcept {
     static_assert(std::has_single_bit(N_SHARDS));
-    producers_[e.instrument & (N_SHARDS - 1)].push(e);
+    Producer &producer = producers_[e.instrument & (N_SHARDS - 1)];
+    if (producer.push(e)) [[likely]] {
+      return;
+    }
+
+    queue_full_++;
+    while (!producer.push(e)) {
+      if (stop_requested_.load(std::memory_order_relaxed)) {
+        return;
+      }
+    }
   }
 
   void on_message(std::span<const std::byte> b) noexcept { P::parse(b, *this); }
 
   void on_error(FramingError e) noexcept { (void)e; }
 
-  void run(uint32_t core, StartGate &gate) noexcept {
+  void run(uint32_t core, SchedPolicy sched, StartGate &gate) noexcept {
     std::string tname = "feed_" + std::to_string(core);
-    if (!pin_and_prioritize(pthread_self(), core)) {
+    if (!pin_and_prioritize(pthread_self(), core, sched)) {
       LOG_ERROR("Failed to pin thread to core: {}", core);
       goto failed;
     }
@@ -110,6 +122,7 @@ public:
       framer_.feed(buf->bytes(), *this);
     }
 
+    finished_.store(true, std::memory_order_relaxed);
     return;
 
   failed:
@@ -119,5 +132,13 @@ public:
 
   void stop() noexcept {
     stop_requested_.store(true, std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] bool finished() const noexcept {
+    return finished_.load(std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] uint64_t queue_full_count() const noexcept {
+    return queue_full_;
   }
 };

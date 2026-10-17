@@ -7,7 +7,11 @@
 #include <cstddef>
 #include <cstdint>
 
-inline constexpr uint32_t N_SHARDS = 4;
+#ifndef FASTBOOK_N_SHARDS
+#define FASTBOOK_N_SHARDS 4
+#endif
+
+inline constexpr uint32_t N_SHARDS = FASTBOOK_N_SHARDS;
 static_assert(std::has_single_bit(N_SHARDS),
               "shard mask requires a power of 2");
 

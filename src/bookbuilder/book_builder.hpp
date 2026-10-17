@@ -12,12 +12,19 @@
 #include <vector>
 
 class BookBuilder {
+public:
+  struct Stats {
+    uint64_t msgs{0};
+    uint64_t dropped_adds{0};
+    uint64_t unknown_oids{0};
+  };
+
 private:
   using Book = OrderBook<8, 256>;
 
   Consumer consumer_;
   std::atomic<bool> stop_;
-  uint64_t msg_count_{0};
+  Stats stats_;
   HashMap<instrument_t, Book *> instrument_map_;
   bufpool::BufferPool &bp_ref_;
   std::vector<std::unique_ptr<Book>> owned_books_; // RAII
@@ -38,6 +45,7 @@ private:
     Book *book = get_or_init_book(mbo.instrument);
     auto exp = book->add_order(mbo.oid, mbo.qty, mbo.price, mbo.side);
     if (!exp.has_value()) [[unlikely]] {
+      stats_.dropped_adds++;
       if (exp.error() == Book::AddOrderError::DuplicateOrderId) {
         LOG_WARN("add dropped, duplicate oid: instrument={} oid={}",
                  mbo.instrument, mbo.oid);
@@ -51,6 +59,7 @@ private:
   void cancel_order_handler(const MboEvent &mbo) noexcept {
     Book *book = instrument_map_.find(mbo.instrument);
     if (book == nullptr || !book->reduce_order(mbo.oid, mbo.qty)) [[unlikely]] {
+      stats_.unknown_oids++;
       LOG_DEBUG("cancel dropped, unknown oid: instrument={} oid={}",
                 mbo.instrument, mbo.oid);
     }
@@ -60,6 +69,7 @@ private:
     Book *book = instrument_map_.find(mbo.instrument);
     if (book == nullptr || !book->execute_order(mbo.oid, mbo.qty))
         [[unlikely]] {
+      stats_.unknown_oids++;
       LOG_DEBUG("execute dropped, unknown oid: instrument={} oid={}",
                 mbo.instrument, mbo.oid);
     }
@@ -68,6 +78,7 @@ private:
   void delete_order_handler(const MboEvent &mbo) noexcept {
     Book *book = instrument_map_.find(mbo.instrument);
     if (book == nullptr || !book->cancel_order(mbo.oid)) [[unlikely]] {
+      stats_.unknown_oids++;
       LOG_DEBUG("delete dropped, unknown oid: instrument={} oid={}",
                 mbo.instrument, mbo.oid);
     }
@@ -76,10 +87,34 @@ private:
   void replace_order_handler(const MboEvent &mbo) noexcept {
     Book *book = instrument_map_.find(mbo.instrument);
     if (book == nullptr || !book->cancel_order(mbo.orig_oid)) [[unlikely]] {
+      stats_.unknown_oids++;
       LOG_DEBUG("replace, unknown orig oid: instrument={} oid={}",
                 mbo.instrument, mbo.orig_oid);
     }
     add_order_handler(mbo);
+  }
+
+  void handle_event(const MboEvent &mbo) noexcept {
+    stats_.msgs++;
+    switch (mbo.etype) {
+    case EventType::ADDED:
+      add_order_handler(mbo);
+      break;
+    case EventType::EXECUTED:
+      execute_order_handler(mbo);
+      break;
+    case EventType::REPLACED:
+      replace_order_handler(mbo);
+      break;
+    case EventType::CANCELLED:
+      cancel_order_handler(mbo);
+      break;
+    case EventType::DELETED:
+      delete_order_handler(mbo);
+      break;
+    default:
+      break;
+    }
   }
 
 public:
@@ -89,9 +124,9 @@ public:
     owned_books_.reserve(8192);
   }
 
-  void run(uint32_t core, StartGate &gate) {
+  void run(uint32_t core, SchedPolicy sched, StartGate &gate) {
     std::string tname = "bbuilder_" + std::to_string(core);
-    if (!pin_and_prioritize(pthread_self(), core)) {
+    if (!pin_and_prioritize(pthread_self(), core, sched)) {
       LOG_ERROR("Failed to pin thread at core: {}", core);
       goto failed;
     }
@@ -107,35 +142,15 @@ public:
     gate.ready.count_down();
     gate.go.wait();
 
-    while (!stop_.load(std::memory_order_relaxed)) {
-      std::optional<MboEvent> mbo_opt;
-      while ((mbo_opt = consumer_.pop()) == std::nullopt) {
-        if (stop_.load(std::memory_order_relaxed)) {
-          return;
-        }
+    while (!stop_.load(std::memory_order_acquire)) {
+      if (std::optional<MboEvent> mbo = consumer_.pop()) {
+        handle_event(*mbo);
       }
+    }
 
-      msg_count_++;
-      const auto &mbo = mbo_opt.value();
-      switch (mbo.etype) {
-      case EventType::ADDED:
-        add_order_handler(mbo);
-        break;
-      case EventType::EXECUTED:
-        execute_order_handler(mbo);
-        break;
-      case EventType::REPLACED:
-        replace_order_handler(mbo);
-        break;
-      case EventType::CANCELLED:
-        cancel_order_handler(mbo);
-        break;
-      case EventType::DELETED:
-        delete_order_handler(mbo);
-        break;
-      default:
-        break;
-      }
+    // drain whatever is left in the queue.
+    while (std::optional<MboEvent> mbo = consumer_.pop()) {
+      handle_event(*mbo);
     }
 
     return;
@@ -145,7 +160,11 @@ public:
     gate.ready.count_down();
   }
 
-  void stop() { stop_.store(true, std::memory_order_relaxed); }
+  void stop() { stop_.store(true, std::memory_order_release); }
 
-  [[nodiscard]] uint64_t message_count() const { return msg_count_; }
+  [[nodiscard]] const Stats &stats() const noexcept { return stats_; }
+
+  [[nodiscard]] size_t book_count() const noexcept {
+    return owned_books_.size();
+  }
 };

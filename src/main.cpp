@@ -7,6 +7,7 @@
 #include <charconv>
 #include <csignal>
 #include <cstdint>
+#include <ctime>
 #include <exception>
 #include <getopt.h>
 #include <memory>
@@ -27,10 +28,6 @@ struct Args {
   const char *mcast_group{nullptr};
   const char *iface{"0.0.0.0"};
   uint16_t port{0};
-};
-
-struct Stats {
-  uint64_t msg_count;
 };
 
 std::string usage(const char *prog) {
@@ -146,6 +143,28 @@ template <class... Ts> struct overloaded : Ts... {
   using Ts::operator()...;
 };
 
+template <class FH> int run_until_done(FH &fh, const sigset_t &sigs) {
+  if (!fh.start()) {
+    return 1;
+  }
+
+  const timespec poll_interval{.tv_sec = 0, .tv_nsec = 10'000'000};
+  int sig = -1;
+  while (sig < 0 && !fh.feed_finished()) {
+    sig = sigtimedwait(&sigs, nullptr, &poll_interval);
+  }
+
+  if (sig > 0) {
+    LOG_INFO("Received {}, shutting down",
+             sig == SIGINT ? "SIGINT" : "SIGTERM");
+  } else {
+    LOG_INFO("Feed finished, draining the builders");
+  }
+
+  fh.stop_and_wait();
+  return 0;
+}
+
 int main(int argc, char *argv[]) {
   Args args;
   if (!parse_args(argc, argv, args)) {
@@ -187,16 +206,8 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  const bool ok = std::visit(overloaded{[](std::monostate) { return false; },
-                                        [](auto &fh) { return fh.start(); }},
-                             *pipeline);
-  if (!ok) {
-    return 1;
-  }
-
-  int sig = 0;
-  sigwait(&sigs, &sig);
-  LOG_INFO("Received {}, shutting down", sig == SIGINT ? "SIGINT" : "SIGTERM");
-
-  return 0;
+  return std::visit(
+      overloaded{[](std::monostate) { return 1; },
+                 [&sigs](auto &fh) { return run_until_done(fh, sigs); }},
+      *pipeline);
 }
