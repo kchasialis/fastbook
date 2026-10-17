@@ -1,7 +1,8 @@
 #pragma once
 
+#include "logger.hpp"
 #include <cassert>
-#include <iostream>
+#include <cstdint>
 #include <memory>
 #include <type_traits>
 #include <utility>
@@ -16,7 +17,11 @@ template <typename K> struct FibHash {
   size_t operator()(K key) const noexcept { return key * 0x9e3779b97f4a7c15; }
 };
 
-template <TrivialKey K, HashNode V, typename Hash = FibHash<K>> class HashMap {
+enum class EraseMode : uint8_t { BackwardShift, Tombstone };
+
+template <TrivialKey K, HashNode V, typename Hash = FibHash<K>,
+          EraseMode Mode = EraseMode::BackwardShift>
+class HashMap {
 private:
   std::unique_ptr<std::pair<K, V>[]> data_;
   size_t size_;
@@ -45,8 +50,10 @@ private:
       if (is_empty(slot)) {
         return capacity_;
       }
-      if (is_deleted(slot)) {
-        continue;
+      if constexpr (Mode == EraseMode::Tombstone) {
+        if (is_deleted(slot)) {
+          continue;
+        }
       }
       if (data_[slot].first == key) {
         return slot;
@@ -74,10 +81,12 @@ public:
     size_t first_deleted = capacity_;
     for (size_t i = 0; i < capacity_; i++) {
       size_t slot = (pos + i) & (capacity_ - 1);
-      if (is_deleted(slot)) {
-        if (first_deleted == capacity_)
-          first_deleted = slot;
-        continue;
+      if constexpr (Mode == EraseMode::Tombstone) {
+        if (is_deleted(slot)) {
+          if (first_deleted == capacity_)
+            first_deleted = slot;
+          continue;
+        }
       }
       if (is_empty(slot)) {
         size_t insert_slot =
@@ -112,9 +121,40 @@ public:
     if (pos == capacity_) {
       return false;
     }
-
-    set_deleted(pos);
     --size_;
+
+    if constexpr (Mode == EraseMode::Tombstone) {
+      set_deleted(pos);
+      return true;
+    }
+
+    set_empty(pos);
+    size_t mask = capacity_ - 1;
+    size_t empty = pos;
+    size_t current = (pos + 1) & mask;
+    while (!is_empty(current)) {
+      size_t wanted = get_pos(data_[current].first);
+      // Interestingly, this works for wraparound as well.
+      // for example, if wanted = 6 in a table of 8 slots 0..7
+      // then the steps needed to go from index 6 to index 1 with wraparound
+      // are: 6 -> 7 -> 0 -> 1 = 3 1 - 6 = -5 mod 8 (or & 7) = 3. we
+      // basically need to add the capacity back if its negative. we want to
+      // avoid branches, the mask handles it by masking unsigned overflow is
+      // defined. it wraps around.
+      size_t steps_wc = (current - wanted) & mask;
+      size_t steps_we = (empty - wanted) & mask;
+
+      if (steps_wc > steps_we) {
+        // the slot wanted to go to wanted initially, move it back to compact
+        // the array. We do that to avoid tombstones,
+        // in order to maintain the invariant that empty means not-present.
+        data_[empty] = data_[current];
+        set_empty(current);
+        empty = current;
+      }
+
+      current = (current + 1) & mask;
+    }
 
     return true;
   }
@@ -137,8 +177,7 @@ public:
 
       return true;
     } catch (const std::bad_alloc &ba) {
-      std::cerr << "[DEBUG]: HashMap::rehash exception: " << ba.what()
-                << std::endl;
+      LOG_ERROR("HashMap::rehash exception: {}", ba.what());
       return false;
     }
   }
