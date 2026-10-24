@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -71,7 +72,9 @@ public:
       : data_(new std::pair<K, V>[capacity << 1]()), size_(0),
         capacity_(capacity << 1), shift_(std::numeric_limits<size_t>::digits -
                                          std::countr_zero(capacity_)) {
-    assert((capacity_ & (capacity_ - 1)) == 0);
+    if (!std::has_single_bit(capacity)) {
+      throw std::runtime_error("Hash table should have a power-of-2 capacity");
+    }
   }
   ~LinearProbingTable() = default;
 

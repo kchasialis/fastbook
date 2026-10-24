@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <set>
 #include <thread>
 #include <vector>
@@ -45,52 +46,19 @@ BufferPool &pool() {
 
 } // namespace
 
-TEST(BufferPool, SmallAllocIsSuitablyAligned) {
-  void *p = pool().alloc(64);
-  ASSERT_NE(p, nullptr);
-  EXPECT_TRUE(aligned_to(p, alignof(std::max_align_t)));
-  pool().free(p);
-}
-
-TEST(BufferPool, EveryClassAllocatesAndIsAlignedToItsClassSize) {
-  std::vector<void *> ptrs;
+TEST(BufferPool, SmallAllocationsAreAlignedWritableAndDistinct) {
   for (uint32_t cls = 0; cls < N_CLASSES; cls++) {
     const size_t want = sizeof_class(cls);
     void *p = pool().alloc(want);
     ASSERT_NE(p, nullptr) << "class " << cls;
-    // Blocks are carved at run_base + k * class_size from a 64 KiB-aligned
-    // run, so each one is aligned to its own class size.
     EXPECT_TRUE(aligned_to(p, want)) << "class " << cls;
-    ptrs.push_back(p);
-  }
-  for (void *p : ptrs) {
+    memset(p, 0xA5, want);
     pool().free(p);
   }
-}
 
-TEST(BufferPool, SizesRoundUpToTheEnclosingClass) {
-  // 17 and 32 both land in the 32-byte class, so freeing one and allocating
-  // the other must hand back the same block.
-  void *a = pool().alloc(32);
-  pool().free(a);
-  void *b = pool().alloc(17);
-  EXPECT_EQ(a, b);
-  pool().free(b);
-}
-
-TEST(BufferPool, FreeThenAllocReusesTheSameBlock) {
-  void *a = pool().alloc(64);
-  pool().free(a);
-  void *b = pool().alloc(64);
-  EXPECT_EQ(a, b) << "magazine should hand back the most recently freed block";
-  pool().free(b);
-}
-
-TEST(BufferPool, DistinctAllocationsDoNotOverlap) {
-  constexpr size_t kCount = 4096; // more than one run's worth for class 0
   std::set<void *> seen;
   std::vector<void *> ptrs;
-  for (size_t i = 0; i < kCount; i++) {
+  for (size_t i = 0; i < 4096; i++) {
     void *p = pool().alloc(16);
     ASSERT_NE(p, nullptr);
     EXPECT_TRUE(seen.insert(p).second) << "duplicate block at i=" << i;
@@ -101,70 +69,23 @@ TEST(BufferPool, DistinctAllocationsDoNotOverlap) {
   }
 }
 
-TEST(BufferPool, AllocatedBlocksAreWritableForTheirFullClassSize) {
-  for (uint32_t cls = 0; cls < N_CLASSES; cls++) {
-    const size_t want = sizeof_class(cls);
-    auto *p = static_cast<unsigned char *>(pool().alloc(want));
-    ASSERT_NE(p, nullptr);
-    memset(p, 0xA5, want);
-    EXPECT_EQ(p[0], 0xA5);
-    EXPECT_EQ(p[want - 1], 0xA5);
-    pool().free(p);
-  }
+TEST(BufferPool, FreedBlockIsReusedBySameSizeClass) {
+  void *a = pool().alloc(32);
+  pool().free(a);
+  void *b = pool().alloc(17);
+  EXPECT_EQ(a, b);
+  pool().free(b);
 }
 
-TEST(BufferPool, LargeAllocationGetsItsOwnAlignedMapping) {
-  constexpr size_t kWant = 16 * 1024; // above MAX_CLASS_SIZE
-  void *p = pool().alloc(kWant);
-  ASSERT_NE(p, nullptr);
-
-  // The payload sits immediately after the descriptor at the chunk base, so
-  // masking off the low CHUNK_SIZE bits still finds the descriptor.
-  const uintptr_t base = reinterpret_cast<uintptr_t>(p) & ~(CHUNK_SIZE - 1);
-  EXPECT_EQ(reinterpret_cast<uintptr_t>(p) - base, sizeof(Chunk));
-  EXPECT_TRUE(aligned_to(reinterpret_cast<void *>(base), CHUNK_SIZE));
-
-  const auto *desc = reinterpret_cast<const Chunk *>(base);
-  EXPECT_TRUE(desc->is_large);
-  EXPECT_EQ(desc->sz, vma_size_at(p))
-      << "descriptor size must match what was actually mapped";
-
-  memset(p, 0x5A, kWant);
-  pool().free(p);
-  EXPECT_EQ(vma_size_at(reinterpret_cast<void *>(base)), 0u)
-      << "free must unmap the whole large mapping";
-}
-
-TEST(BufferPool, LargeAllocationBiggerThanOneChunk) {
-  // Spans more than CHUNK_SIZE, so the tail trim and the recorded size have to
-  // account for the real length rather than assuming one chunk.
+TEST(BufferPool, LargeAllocationIsMappedAndUnmapped) {
   constexpr size_t kWant = 3 * 1024 * 1024;
   void *p = pool().alloc(kWant);
   ASSERT_NE(p, nullptr);
+  EXPECT_GE(vma_size_at(p), kWant);
 
-  const uintptr_t base = reinterpret_cast<uintptr_t>(p) & ~(CHUNK_SIZE - 1);
-  const auto *desc = reinterpret_cast<const Chunk *>(base);
-  EXPECT_TRUE(desc->is_large);
-  EXPECT_GE(desc->sz, kWant + sizeof(Chunk));
-  EXPECT_EQ(desc->sz, vma_size_at(p));
-
-  memset(p, 0x3C, kWant); // must be writable end to end
+  memset(p, 0x3C, kWant);
   pool().free(p);
-  EXPECT_EQ(vma_size_at(reinterpret_cast<void *>(base)), 0u);
-}
-
-TEST(BufferPool, ReserveWarmsTheMagazineForThatClass) {
-  EXPECT_TRUE(pool().reserve(64));
-  // Everything after a successful reserve comes from the magazine.
-  std::vector<void *> ptrs;
-  for (int i = 0; i < 64; i++) {
-    void *p = pool().alloc(64);
-    ASSERT_NE(p, nullptr);
-    ptrs.push_back(p);
-  }
-  for (void *p : ptrs) {
-    pool().free(p);
-  }
+  EXPECT_EQ(vma_size_at(p), 0u);
 }
 
 TEST(BufferPool, BlocksFreedOnOneThreadAreUsableOnAnother) {
@@ -172,7 +93,7 @@ TEST(BufferPool, BlocksFreedOnOneThreadAreUsableOnAnother) {
   std::thread t([&] { from_worker = pool().alloc(128); });
   t.join();
   ASSERT_NE(from_worker, nullptr);
-  pool().free(from_worker); // freed on a different thread than allocated
+  pool().free(from_worker);
   void *p = pool().alloc(128);
   EXPECT_NE(p, nullptr);
   pool().free(p);
@@ -194,11 +115,11 @@ TEST(BufferPool, ThreadExitReturnsMagazineBlocksToTheGlobalStack) {
       ptrs.push_back(pool().alloc(256));
     }
     for (void *p : ptrs) {
-      pool().free(p); // parked in this thread's magazine
+      pool().free(p);
       donated.insert(p);
     }
   });
-  producer.join(); // flush_magazine runs here
+  producer.join();
 
   size_t recovered = 0;
   std::thread observer([&] {

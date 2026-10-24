@@ -251,7 +251,8 @@ public:
       return false;
     }
 
-    assert(orders_.erase(oid));
+    [[maybe_unused]] bool erased = orders_.erase(oid);
+    assert(erased);
 
     orders_op_.restore(order);
     return true;

@@ -1,12 +1,14 @@
 #include "bench_utils.hpp"
 #include "linear_probing_table.hpp"
 #include "order_book.hpp"
+#include "order_book_old.hpp"
 #include <algorithm>
 #include <benchmark/benchmark.h>
 #include <deque>
 #include <map>
 #include <mutex>
 #include <random>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -94,40 +96,52 @@ public:
   }
 };
 
+using TwoTierBook = OrderBook<8, 512>;
+using WindowBook = old::OrderBook;
+
+template <class Book> static void fill_book(Book &book) {
+  if constexpr (std::is_same_v<Book, WindowBook>) {
+    book.reset(100, 1, 1024);
+  }
+  for (size_t i = 0; i < OB_LIVE_COUNT; i++) {
+    benchmark::DoNotOptimize(
+        book.add_order(OB_POOL[i], 100, pool_price(i), Side::BID));
+  }
+}
+
+template <class Book>
 static void BM_OrderBook_SteadyState(benchmark::State &state) {
   pin_to_core(0);
 
-  OrderBook book{buffer_pool()};
-  book.reset(100, 1, 1024);
-  for (size_t i = 0; i < OB_LIVE_COUNT; i++) {
-    book.add_order(OB_POOL[i], 100, pool_price(i), Side::BID);
-  }
+  Book book{buffer_pool()};
+  fill_book(book);
 
   size_t i = 0;
   for (auto _ : state) {
     book.cancel_order(OB_POOL[i % OB_POOL_SIZE]);
     size_t next = (i + OB_LIVE_COUNT) % OB_POOL_SIZE;
-    book.add_order(OB_POOL[next], 100, pool_price(next), Side::BID);
+    benchmark::DoNotOptimize(
+        book.add_order(OB_POOL[next], 100, pool_price(next), Side::BID));
     i++;
   }
   benchmark::DoNotOptimize(i);
 }
-BENCHMARK(BM_OrderBook_SteadyState);
+BENCHMARK(BM_OrderBook_SteadyState<TwoTierBook>);
+BENCHMARK(BM_OrderBook_SteadyState<WindowBook>);
 
+template <class Book>
 static void BM_OrderBook_BestPrice(benchmark::State &state) {
   pin_to_core(0);
 
-  OrderBook book{buffer_pool()};
-  book.reset(100, 1, 1024);
-  for (size_t i = 0; i < OB_LIVE_COUNT; i++) {
-    book.add_order(OB_POOL[i], 100, pool_price(i), Side::BID);
-  }
+  Book book{buffer_pool()};
+  fill_book(book);
 
   for (auto _ : state) {
     benchmark::DoNotOptimize(book.best_price(Side::BID));
   }
 }
-BENCHMARK(BM_OrderBook_BestPrice);
+BENCHMARK(BM_OrderBook_BestPrice<TwoTierBook>);
+BENCHMARK(BM_OrderBook_BestPrice<WindowBook>);
 
 static void BM_StlOrderBook_SteadyState(benchmark::State &state) {
   pin_to_core(0);
