@@ -1,6 +1,5 @@
 #pragma once
 
-#include <bit>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -9,15 +8,7 @@
 #include <span>
 
 #include "buf_reader.hpp"
-
-enum class FramingError : uint8_t { MalformedLength };
-
-template <class S>
-concept MessageSink =
-    requires(S s, std::span<const std::byte> b, FramingError e) {
-      { s.on_message(b) } -> std::same_as<void>;
-      { s.on_error(e) } -> std::same_as<void>;
-    };
+#include "framer.hpp"
 
 template <bool, size_t MaxFrame> struct Reassembly {
   std::byte buf[MaxFrame];
@@ -69,21 +60,23 @@ private:
   }
 
 public:
+  using Error = StreamError;
+
   template <MessageSink Sink>
-  void feed(std::span<const std::byte> data, Sink &sink) noexcept {
+  std::expected<void, Error> feed(std::span<const std::byte> data,
+                                  Sink &sink) noexcept {
     if constexpr (MayStraddle) {
       if (reasm_.leftover > 0) {
         bool malformed = false;
         auto s = handle_leftover_bytes_(data, malformed);
         if (malformed) [[unlikely]] {
           reasm_.leftover = 0;
-          sink.on_error(FramingError::MalformedLength);
-          return;
+          return std::unexpected(StreamError::Malformed);
         }
         if (s.has_value()) {
           sink.on_message(s.value());
         } else {
-          return;
+          return {};
         }
       }
     }
@@ -101,8 +94,7 @@ public:
         }
       } else {
         if (rem < sizeof(uint16_t)) [[unlikely]] {
-          sink.on_error(FramingError::MalformedLength);
-          return;
+          return std::unexpected(StreamError::Malformed);
         }
       }
 
@@ -112,8 +104,7 @@ public:
         if constexpr (MayStraddle) {
           reasm_.leftover = 0;
         }
-        sink.on_error(FramingError::MalformedLength);
-        return;
+        return std::unexpected(StreamError::Malformed);
       }
 
       if constexpr (MayStraddle) {
@@ -124,12 +115,13 @@ public:
         }
       } else {
         if (reader.remaining() < msg_length) [[unlikely]] {
-          sink.on_error(FramingError::MalformedLength);
-          return;
+          return std::unexpected(StreamError::Malformed);
         }
       }
 
       sink.on_message(reader.take_n(static_cast<size_t>(msg_length)));
     }
+
+    return {};
   }
 };

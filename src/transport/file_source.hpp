@@ -13,8 +13,8 @@
 #include <unistd.h>
 #include <utility>
 
-#include "transport.hpp"
 #include "sys.hpp"
+#include "transport.hpp"
 
 class FileSource {
 private:
@@ -38,16 +38,16 @@ public:
   explicit FileSource(const char *fpath) : start_(nullptr), length_(0) {
     FdWrapper fd(open(fpath, O_RDONLY));
 
-    check(fd.val(), "open");
+    check(*fd, "open");
 
     struct stat st;
-    check(fstat(fd.val(), &st), "fstat");
+    check(fstat(*fd, &st), "fstat");
     if (st.st_size == 0) {
       return;
     }
     length_ = static_cast<size_t>(st.st_size);
     start_ = static_cast<std::byte *>(
-        mmap(NULL, length_, PROT_READ, MAP_PRIVATE, fd.val(), 0));
+        mmap(NULL, length_, PROT_READ, MAP_PRIVATE, *fd, 0));
     if (start_ == MAP_FAILED) {
       throw std::runtime_error(std::format("Failed to mmap file: {}, error: {}",
                                            fpath, strerror(errno)));

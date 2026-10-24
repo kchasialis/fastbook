@@ -1,5 +1,7 @@
 #include "feed_handler.hpp"
 #include "file_source.hpp"
+#include "itch_parser.hpp"
+#include "length_prefix_framer.hpp"
 #include "logger.hpp"
 #include "mcast_udp_source.hpp"
 #include "types.hpp"

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <string_view>
 
 class BufReader {
 private:
@@ -48,6 +49,13 @@ public:
   std::span<const std::byte> take_n(size_t n) noexcept {
     assert(n <= buf_.size());
     auto *buf_start = buf_.data();
+    buf_ = buf_.subspan(n);
+
+    return {buf_start, n};
+  }
+  std::string_view take_n_sv(size_t n) noexcept {
+    assert(n <= buf_.size());
+    auto *buf_start = reinterpret_cast<const char *>(buf_.data());
     buf_ = buf_.subspan(n);
 
     return {buf_start, n};

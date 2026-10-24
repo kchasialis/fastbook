@@ -59,6 +59,8 @@ public:
     return *this;
   }
 
+  int operator*() const noexcept { return fd_; }
+
   int val() const noexcept { return fd_; }
   int release() noexcept {
     int ret = fd_;

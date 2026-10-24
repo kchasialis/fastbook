@@ -1,8 +1,8 @@
 #pragma once
 
 #include "object_pool.hpp"
-#include "transport.hpp"
 #include "sys.hpp"
+#include "transport.hpp"
 #include <arpa/inet.h>
 #include <atomic>
 #include <cerrno>
@@ -62,11 +62,11 @@ private:
   struct io_uring ring_;
   PoolType pool_;
 
-  std::atomic<Status> conn_status_;
+  std::atomic<TransportStatus> conn_status_;
   bool recv_armed_{false};
 
-  static constexpr bool is_terminal(Status s) noexcept {
-    return s == Status::Eof || s == Status::Error;
+  static constexpr bool is_terminal(TransportStatus s) noexcept {
+    return s == TransportStatus::Eof || s == TransportStatus::Error;
   }
 
 public:
@@ -76,17 +76,14 @@ public:
   public:
     explicit Buffer(PoolEntry &&entry) noexcept : entry_(std::move(entry)) {}
 
-    Buffer(Buffer &&) noexcept = default;
-    Buffer &operator=(Buffer &&) noexcept = default;
-
-    std::span<const std::byte> bytes() const noexcept {
+    [[nodiscard]] std::span<const std::byte> bytes() const noexcept {
       const io_uring_data_t *data = entry_.get();
-      return std::span<const std::byte>(data->buf, data->sz);
+      return {data->buf, data->sz};
     }
   };
 
 private:
-  std::unexpected<Status> fail_(Status err) noexcept {
+  std::unexpected<TransportStatus> fail_(TransportStatus err) noexcept {
     shutdown(sockfd_.val(), SHUT_RDWR);
     conn_status_.store(err, std::memory_order_relaxed);
     return std::unexpected(err);
@@ -115,7 +112,7 @@ private:
     io_uring_sqe_set_data(sqe, data);
     if (io_uring_submit(&ring_) <= 0) [[unlikely]] {
       pool_.restore(data);
-      fail_(Status::Error);
+      fail_(TransportStatus::Error);
       return false;
     }
     recv_armed_ = true;
@@ -131,7 +128,7 @@ public:
 
   TcpSource(const char *ip, uint16_t port)
       : sockfd_(socket(AF_INET, SOCK_STREAM, 0)), pool_(POOL_SIZE),
-        conn_status_(Status::WouldBlock) {
+        conn_status_(TransportStatus::WouldBlock) {
     check(sockfd_.val(), "socket()");
 
     struct sockaddr_in addr;
@@ -180,8 +177,8 @@ public:
     io_uring_queue_exit(&ring_);
   }
 
-  std::expected<Buffer, Status> next() noexcept {
-    const Status s = conn_status_.load(std::memory_order_relaxed);
+  std::expected<Buffer, TransportStatus> next() noexcept {
+    const TransportStatus s = conn_status_.load(std::memory_order_relaxed);
     if (is_terminal(s)) [[unlikely]] {
       return std::unexpected(s);
     }
@@ -194,7 +191,7 @@ public:
 
     struct io_uring_cqe *cqe;
     if (io_uring_peek_cqe(&ring_, &cqe) < 0) {
-      return std::unexpected(Status::WouldBlock);
+      return std::unexpected(TransportStatus::WouldBlock);
     }
 
     const int res = cqe->res;
@@ -206,13 +203,13 @@ public:
 
     if (res < 0) [[unlikely]] {
       if (res == -EAGAIN || res == -EINTR) {
-        return std::unexpected(Status::WouldBlock);
+        return std::unexpected(TransportStatus::WouldBlock);
       }
-      return fail_(Status::Error);
+      return fail_(TransportStatus::Error);
     }
     if (res == 0) [[unlikely]] {
       // Connection closed by the peer, or shutdown() was called.
-      return fail_(Status::Eof);
+      return fail_(TransportStatus::Eof);
     }
 
     data->sz = static_cast<size_t>(res);
@@ -222,10 +219,11 @@ public:
     return buf;
   }
 
-  std::expected<void, Status> send(std::span<const std::byte> d) noexcept {
-    const Status s = conn_status_.load(std::memory_order_relaxed);
+  std::expected<void, TransportStatus>
+  send(std::span<const std::byte> d) noexcept {
+    const TransportStatus s = conn_status_.load(std::memory_order_relaxed);
     if (is_terminal(s)) [[unlikely]] {
-      // Terminal status already observed; the socket never recovers.
+      // Terminal TransportStatus already observed; the socket never recovers.
       return std::unexpected(s);
     }
 
@@ -237,10 +235,10 @@ public:
     } while (ret < 0 && errno == EINTR);
 
     if (ret < 0) [[unlikely]] {
-      return fail_(Status::Error);
+      return fail_(TransportStatus::Error);
     }
     if (static_cast<size_t>(ret) != d.size()) [[unlikely]] {
-      return fail_(Status::Error);
+      return fail_(TransportStatus::Error);
     }
 
     set_quickack_();

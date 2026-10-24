@@ -2,54 +2,57 @@
 
 #include "buffer_pool.hpp"
 #include "event_queue.hpp"
-#include "itch_parser.hpp"
-#include "length_prefix_framer.hpp"
+#include "framer.hpp"
 #include "logger.hpp"
+#include "parser.hpp"
+#include "recovery.hpp"
 #include "threading.hpp"
 #include "transport.hpp"
 #include "types.hpp"
 #include <array>
 #include <atomic>
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <expected>
 #include <pthread.h>
 #include <span>
 #include <sys/types.h>
 #include <vector>
 
-struct AnyMessageSink {
-  void on_message(std::span<const std::byte>);
-  void on_error(FramingError);
-};
-static_assert(MessageSink<AnyMessageSink>);
-
-struct AnyEventSink {
-  void on_event(const MboEvent &);
-};
-static_assert(EventSink<AnyEventSink>);
-
-template <class F>
-concept Framer =
-    requires(F f, std::span<const std::byte> data, AnyMessageSink &sink) {
-      { f.feed(data, sink) } -> std::same_as<void>;
-    };
-
-template <class P>
-concept Parser = requires(std::span<const std::byte> b, AnyEventSink &sink) {
-  { P::parse(b, sink) } -> std::same_as<void>;
-};
-
-template <Transport Src, Framer F, Parser P> class VenueFeed {
+template <Transport Src, Framer F, Parser P, Recoverer<F> R> class VenueFeed {
 private:
   Src &src_;
   std::vector<Producer> producers_;
   F framer_;
+  R recoverer_;
   std::atomic<bool> stop_requested_;
   std::atomic<bool> finished_;
   uint64_t queue_full_{0};
   bufpool::BufferPool &bp_ref_;
+
+  void on_framer_error([[maybe_unused]] StreamError e) noexcept {
+    // TODO(kostas): what to do here? idk yet, just return for now.
+  }
+
+  void on_framer_error(SequencedError e) noexcept {
+    switch (e) {
+    case SequencedError::Gap: {
+      recoverer_.recover(framer_, *this);
+      break;
+    }
+    case SequencedError::Malformed: {
+      break;
+    }
+    case SequencedError::SessionChanged: {
+      break;
+    }
+    case SequencedError::EndOfSession: {
+      break;
+    }
+    default:
+      __builtin_unreachable();
+      break;
+    }
+  }
 
 public:
   VenueFeed(Src &src, std::array<Queue, N_SHARDS> &queues,
@@ -59,8 +62,8 @@ public:
     static_assert(EventSink<VenueFeed>);
 
     producers_.reserve(queues.size());
-    for (size_t i = 0; i < queues.size(); i++) {
-      producers_.emplace_back(queues[i].producer());
+    for (auto &queue : queues) {
+      producers_.emplace_back(queue.producer());
     }
   }
 
@@ -80,8 +83,6 @@ public:
   }
 
   void on_message(std::span<const std::byte> b) noexcept { P::parse(b, *this); }
-
-  void on_error(FramingError e) noexcept { (void)e; }
 
   void run(uint32_t core, SchedPolicy sched, StartGate &gate) noexcept {
     std::string tname = "feed_" + std::to_string(core);
@@ -107,10 +108,10 @@ public:
       if (!buf.has_value()) {
         auto err = buf.error();
         switch (err) {
-        case Status::WouldBlock:
+        case TransportStatus::WouldBlock:
           break;
-        case Status::Eof:
-        case Status::Error:
+        case TransportStatus::Eof:
+        case TransportStatus::Error:
           stop();
           break;
         default:
@@ -119,7 +120,10 @@ public:
         }
         continue;
       }
-      framer_.feed(buf->bytes(), *this);
+      auto ret = framer_.feed(buf->bytes(), *this);
+      if (!ret.has_value()) [[unlikely]] {
+        on_framer_error(ret.error());
+      }
     }
 
     finished_.store(true, std::memory_order_relaxed);

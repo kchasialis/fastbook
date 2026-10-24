@@ -1,15 +1,11 @@
 #pragma once
 
 #include "buf_reader.hpp"
+#include "parser.hpp"
 #include "types.hpp"
 #include <array>
 #include <cassert>
 #include <span>
-
-template <class S>
-concept EventSink = requires(S s, const MboEvent &e) {
-  { s.on_event(e) } -> std::same_as<void>;
-};
 
 class ITCHParser {
 private:
