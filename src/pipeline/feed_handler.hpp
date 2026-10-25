@@ -9,6 +9,7 @@
 #include "timing.hpp"
 #include "transport.hpp"
 #include "venue_feed.hpp"
+#include <concepts>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -17,16 +18,19 @@
 #include <sstream>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
 
-template <Transport Src, Framer F, Parser P> class FeedHandler {
+template <Transport Src, Framer F, Parser P, Recoverer<F> R = NoRecoverer>
+class FeedHandler {
 private:
   bufpool::BufferPool bp_;
   Src src_;
+  R recoverer_;
   std::array<Queue, N_SHARDS> queues_;
-  VenueFeed<Src, F, P> feed_;
+  VenueFeed<Src, F, P, R> feed_;
   fs::path thread_cfg_fpath_;
   StartGate gate_;
   bool started_;
@@ -58,7 +62,7 @@ private:
 
     try {
       const ThreadConfig cfg = ThreadConfig::load(thread_cfg_fpath_);
-      feed_thread_ = std::thread(&VenueFeed<Src, F, P>::run, &feed_,
+      feed_thread_ = std::thread(&VenueFeed<Src, F, P, R>::run, &feed_,
                                  cfg.feed_core, cfg.sched, std::ref(gate_));
 
       bb_threads_.reserve(cfg.builder_cores.size());
@@ -101,14 +105,21 @@ private:
 
     const uint64_t rate = ms > 0 ? total * 1000 / ms : 0;
     LOG_INFO("{} msgs in {} ms ({} msgs/s), feed stalled on a full queue {} "
-             "times",
-             total, ms, rate, feed_.queue_full_count());
+             "times, dropped {} malformed datagrams",
+             total, ms, rate, feed_.queue_full_count(),
+             feed_.malformed_count());
   }
 
 public:
   template <typename... Args>
+    requires std::default_initializable<R>
   FeedHandler(const fs::path &thread_cfg_fpath, Args &&...args)
-      : src_(std::forward<Args>(args)...), feed_(src_, queues_, bp_),
+      : FeedHandler(thread_cfg_fpath, R{}, std::forward<Args>(args)...) {}
+
+  template <typename... Args>
+  FeedHandler(const fs::path &thread_cfg_fpath, R recoverer, Args &&...args)
+      : src_(std::forward<Args>(args)...), recoverer_(std::move(recoverer)),
+        feed_(src_, recoverer_, queues_, bp_),
         thread_cfg_fpath_(thread_cfg_fpath), gate_(N_SHARDS + 1),
         started_(false), start_ok_(false), stopped_(false) {}
 

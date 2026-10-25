@@ -11,6 +11,7 @@
 #include "types.hpp"
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <pthread.h>
@@ -23,41 +24,68 @@ private:
   Src &src_;
   std::vector<Producer> producers_;
   F framer_;
-  R recoverer_;
+  R &recoverer_;
   std::atomic<bool> stop_requested_;
   std::atomic<bool> finished_;
   uint64_t queue_full_{0};
+  uint64_t malformed_{0};
   bufpool::BufferPool &bp_ref_;
 
-  void on_framer_error([[maybe_unused]] StreamError e) noexcept {
-    // TODO(kostas): what to do here? idk yet, just return for now.
+  static constexpr uint32_t MAX_RECOVERIES = 3;
+
+  void on_framer_error(std::span<const std::byte>, StreamError) noexcept {
+    LOG_ERROR("Malformed stream, message boundaries are lost, stopping");
+    stop();
   }
 
-  void on_framer_error(SequencedError e) noexcept {
-    switch (e) {
-    case SequencedError::Gap: {
-      recoverer_.recover(framer_, *this);
-      break;
+  void on_framer_error(std::span<const std::byte> buf,
+                       SequencedError e) noexcept {
+    for (uint32_t i = 0; i < MAX_RECOVERIES; i++) {
+      switch (e) {
+      case SequencedError::Gap: {
+        auto rec = recoverer_.recover(framer_, *this);
+        if (!rec) {
+          LOG_ERROR("Recovery failed with error {}, stopping",
+                    static_cast<unsigned>(rec.error()));
+          stop();
+          return;
+        }
+        auto ret = framer_.feed(buf, *this);
+        if (ret) {
+          return;
+        }
+        e = ret.error();
+        break;
+      }
+      case SequencedError::Malformed: {
+        malformed_++;
+        LOG_WARN("Malformed datagram dropped");
+        return;
+      }
+      case SequencedError::SessionChanged: {
+        LOG_ERROR("Session changed, stopping");
+        stop();
+        return;
+      }
+      case SequencedError::EndOfSession: {
+        stop();
+        return;
+      }
+      default:
+        assert(false);
+        __builtin_unreachable();
+      }
     }
-    case SequencedError::Malformed: {
-      break;
-    }
-    case SequencedError::SessionChanged: {
-      break;
-    }
-    case SequencedError::EndOfSession: {
-      break;
-    }
-    default:
-      __builtin_unreachable();
-      break;
-    }
+
+    LOG_ERROR("Gap still open after {} recoveries, stopping", MAX_RECOVERIES);
+    stop();
   }
 
 public:
-  VenueFeed(Src &src, std::array<Queue, N_SHARDS> &queues,
+  VenueFeed(Src &src, R &recoverer, std::array<Queue, N_SHARDS> &queues,
             bufpool::BufferPool &bp_ref)
-      : src_(src), stop_requested_(false), finished_(false), bp_ref_(bp_ref) {
+      : src_(src), recoverer_(recoverer), stop_requested_(false),
+        finished_(false), bp_ref_(bp_ref) {
     static_assert(MessageSink<VenueFeed>);
     static_assert(EventSink<VenueFeed>);
 
@@ -122,7 +150,7 @@ public:
       }
       auto ret = framer_.feed(buf->bytes(), *this);
       if (!ret.has_value()) [[unlikely]] {
-        on_framer_error(ret.error());
+        on_framer_error(buf->bytes(), ret.error());
       }
     }
 
@@ -145,4 +173,6 @@ public:
   [[nodiscard]] uint64_t queue_full_count() const noexcept {
     return queue_full_;
   }
+
+  [[nodiscard]] uint64_t malformed_count() const noexcept { return malformed_; }
 };

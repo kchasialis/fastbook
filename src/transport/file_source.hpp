@@ -78,9 +78,9 @@ public:
     return *this;
   }
 
-  std::expected<FileSource::Buffer, Status> next() noexcept {
+  std::expected<FileSource::Buffer, TransportStatus> next() noexcept {
     if (remaining_.empty()) {
-      return std::unexpected(Status::Eof);
+      return std::unexpected(TransportStatus::Eof);
     }
 
     const size_t n = std::min(remaining_.size(), SLICE_SIZE);
