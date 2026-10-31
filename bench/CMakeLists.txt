@@ -11,6 +11,14 @@ target_link_libraries(fastbook_bench
     PRIVATE benchmark::benchmark_main
 )
 
+add_executable(fastbook_bench_hashtable bench_hashtable.cpp)
+
+target_link_libraries(fastbook_bench_hashtable
+    PRIVATE fastbook_options
+    PRIVATE common
+    PRIVATE feed
+)
+
 add_executable(fastbook_bench_logger bench_logger.cpp)
 
 target_link_libraries(fastbook_bench_logger

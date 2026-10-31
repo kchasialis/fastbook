@@ -125,6 +125,7 @@ class Histogram {
     return value;
   }
 
+public:
   template <double P> double percentile() {
     static constexpr auto PER_100K = static_cast<uint64_t>(P * 1000.0 + 0.5);
 
@@ -144,7 +145,9 @@ class Histogram {
     return 0.0f;
   }
 
-public:
+  [[nodiscard]] uint64_t count() const noexcept { return total_samples; }
+  [[nodiscard]] uint64_t max() const noexcept { return max_value; }
+
   void merge(const Histogram &other) {
     for (size_t i = 0; i < samples.size(); i++) {
       samples[i] += other.samples[i];
@@ -238,23 +241,25 @@ inline bool thread_is_init() {
   return pthread_getspecific(get_pthread_key()) != nullptr;
 }
 
+template <bool Fenced = false> inline uint64_t read_tsc() noexcept {
+  uint64_t result;
+  if constexpr (Fenced) {
+    unsigned int aux;
+    result = __rdtscp(&aux);
+    _mm_lfence();
+  } else {
+    result = __rdtsc();
+  }
+
+  return result;
+}
+
 template <bool Fenced = false> class CycleProfiler {
 private:
   // need something to hold the histograms.
   uint64_t start_;
 
-  uint64_t tsc() {
-    uint64_t result;
-    if constexpr (Fenced) {
-      unsigned int aux;
-      result = __rdtscp(&aux);
-      _mm_lfence();
-    } else {
-      result = __rdtsc();
-    }
-
-    return result;
-  }
+  uint64_t tsc() { return read_tsc<Fenced>(); }
 
 public:
   CycleProfiler() : start_(tsc()) {}
@@ -290,6 +295,10 @@ enum class Event : uint8_t {
   ITLB_LOADS,
   ITLB_LOAD_MISSES,
   PAGE_FAULTS,
+  AMD_L2_FILLS,
+  AMD_L3_FILLS,
+  AMD_DRAM_FILLS,
+  AMD_DTLB_MISSES,
 };
 
 // TODO(kostas): Add event for HITM too.
@@ -319,7 +328,11 @@ inline constexpr auto EVENTS = std::to_array<EventInfo>(
      {"iTLB-load-misses", PERF_TYPE_HW_CACHE,
       hw_cache_config(PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ,
                       PERF_COUNT_HW_CACHE_RESULT_MISS)},
-     {"page-faults", PERF_TYPE_SOFTWARE, PERF_COUNT_SW_PAGE_FAULTS}});
+     {"page-faults", PERF_TYPE_SOFTWARE, PERF_COUNT_SW_PAGE_FAULTS},
+     {"amd-l2-fills", PERF_TYPE_RAW, 0x0143},
+     {"amd-l3-fills", PERF_TYPE_RAW, 0x0243},
+     {"amd-dram-fills", PERF_TYPE_RAW, 0x0843},
+     {"amd-dtlb-misses", PERF_TYPE_RAW, 0xff45}});
 
 inline int perf_event_open(perf_event_attr *attr, pid_t pid, int cpu,
                            int group_fd, unsigned long flags) noexcept {
