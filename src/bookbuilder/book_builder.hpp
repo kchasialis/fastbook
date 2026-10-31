@@ -22,7 +22,7 @@ public:
   };
 
 private:
-  using Book = OrderBook<8, 256>;
+  using Book = OrderBook<8, 8192>;
 
   Consumer consumer_;
   std::atomic<bool> stop_;
@@ -53,8 +53,8 @@ private:
         LOG_WARN("add dropped, duplicate oid: instrument={} oid={}",
                  mbo.instrument, mbo.oid);
       } else {
-        LOG_WARN("add dropped, levels full: instrument={} oid={} price={}",
-                 mbo.instrument, mbo.oid, mbo.price);
+        LOG_DEBUG("add dropped, levels full: instrument={} oid={} price={}",
+                  mbo.instrument, mbo.oid, mbo.price);
       }
     }
   }
