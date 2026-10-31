@@ -42,6 +42,7 @@ set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest googlebenchmark)
 
 add_subdirectory(src)
+add_subdirectory(tools)
 
 option(BUILD_TESTS "Build tests" ON)
 option(BUILD_BENCH "Build benchmarks" ON)

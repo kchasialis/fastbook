@@ -110,6 +110,10 @@ public:
             // we made some progress, reset the counter.
             attempts = 0;
           }
+
+          if (framer.expected() >= first + count) {
+            break;
+          }
         }
 
         if (stop) {

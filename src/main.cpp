@@ -4,9 +4,12 @@
 #include "length_prefix_framer.hpp"
 #include "logger.hpp"
 #include "mcast_udp_source.hpp"
+#include "mold_udp64_framer.hpp"
+#include "retransmit_recoverer.hpp"
 #include "types.hpp"
 
 #include <charconv>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <ctime>
@@ -30,6 +33,8 @@ struct Args {
   const char *mcast_group{nullptr};
   const char *iface{"0.0.0.0"};
   uint16_t port{0};
+  const char *rerequest_ip{"127.0.0.1"};
+  uint16_t rerequest_port{0};
 };
 
 std::string usage(const char *prog) {
@@ -39,7 +44,7 @@ std::string usage(const char *prog) {
      << "  " << prog << " -e <exchange> -c <thread-config> -f <capture-file>\n"
      << "  " << prog
      << " -e <exchange> -c <thread-config> -g <mcast-group> -p <port> "
-        "[-i <iface-ip>]\n"
+        "-P <rerequest-port> [-i <iface-ip>] [-R <rerequest-ip>]\n"
      << "\n"
      << "  -e, --exchange  nasdaq | cme | cboe | nyse | eurex\n"
      << "  -c, --config    thread config (feed and builder cores)\n"
@@ -48,6 +53,9 @@ std::string usage(const char *prog) {
      << "  -p, --port      multicast port\n"
      << "  -i, --iface     local interface ip for the group (default "
         "0.0.0.0)\n"
+     << "  -R, --rerequest-ip    MoldUDP64 re-request server ip (default "
+        "127.0.0.1)\n"
+     << "  -P, --rerequest-port  MoldUDP64 re-request server port\n"
      << "  -h, --help      print this message\n";
 
   return ss.str();
@@ -60,17 +68,20 @@ bool parse_port(std::string_view s, uint16_t &out) {
 }
 
 bool parse_args(int argc, char *argv[], Args &args) {
-  static option long_opts[] = {{"exchange", required_argument, nullptr, 'e'},
-                               {"config", required_argument, nullptr, 'c'},
-                               {"file", required_argument, nullptr, 'f'},
-                               {"group", required_argument, nullptr, 'g'},
-                               {"port", required_argument, nullptr, 'p'},
-                               {"iface", required_argument, nullptr, 'i'},
-                               {"help", no_argument, nullptr, 'h'},
-                               {nullptr, 0, nullptr, 0}};
+  static option long_opts[] = {
+      {"exchange", required_argument, nullptr, 'e'},
+      {"config", required_argument, nullptr, 'c'},
+      {"file", required_argument, nullptr, 'f'},
+      {"group", required_argument, nullptr, 'g'},
+      {"port", required_argument, nullptr, 'p'},
+      {"iface", required_argument, nullptr, 'i'},
+      {"rerequest-ip", required_argument, nullptr, 'R'},
+      {"rerequest-port", required_argument, nullptr, 'P'},
+      {"help", no_argument, nullptr, 'h'},
+      {nullptr, 0, nullptr, 0}};
 
   int opt;
-  while ((opt = getopt_long(argc, argv, ":e:c:f:g:p:i:h", long_opts,
+  while ((opt = getopt_long(argc, argv, ":e:c:f:g:p:i:R:P:h", long_opts,
                             nullptr)) != -1) {
     switch (opt) {
     case 'e':
@@ -98,6 +109,15 @@ bool parse_args(int argc, char *argv[], Args &args) {
       break;
     case 'i':
       args.iface = optarg;
+      break;
+    case 'R':
+      args.rerequest_ip = optarg;
+      break;
+    case 'P':
+      if (!parse_port(optarg, args.rerequest_port)) {
+        LOG_ERROR("Invalid re-request port '{}'", optarg);
+        return false;
+      }
       break;
     case 'h':
       return false;
@@ -131,15 +151,26 @@ bool parse_args(int argc, char *argv[], Args &args) {
     return false;
   }
 
+  if (live && args.rerequest_port == 0) {
+    LOG_ERROR("--rerequest-port is required with --group");
+    return false;
+  }
+
   return true;
 }
 
 // Different types of FeedHandlers, based on what the system currently supports.
 using ItchFile =
     FeedHandler<FileSource, LengthPrefixFramer<true, 4096>, ITCHParser>;
-using NasdaqUDP =
-    FeedHandler<McastUDPSource, LengthPrefixFramer<false, 4096>, ITCHParser>;
-using Pipeline = std::variant<std::monostate, ItchFile, NasdaqUDP>;
+using NasdaqMoldUDP = FeedHandler<McastUDPSource, MoldUDP64Framer, ITCHParser,
+                                  MoldRetransmitRecoverer>;
+using Pipeline = std::variant<std::monostate, ItchFile, NasdaqMoldUDP>;
+
+using namespace std::chrono_literals;
+inline constexpr std::chrono::microseconds REREQUEST_REPLY_TIMEOUT = 100ms;
+inline constexpr std::chrono::microseconds MAX_RECOVERY_TIME = 5s;
+inline constexpr uint32_t MAX_REREQUEST_ATTEMPTS = 5;
+inline constexpr uint16_t MAX_MESSAGES_PER_REREQUEST = 1000;
 
 template <class... Ts> struct overloaded : Ts... {
   using Ts::operator()...;
@@ -192,8 +223,13 @@ int main(int argc, char *argv[]) {
       if (args.file != nullptr) {
         pipeline->emplace<ItchFile>(args.config_fpath, args.file);
       } else {
-        pipeline->emplace<NasdaqUDP>(args.config_fpath, args.iface,
-                                     args.mcast_group, args.port);
+        pipeline->emplace<NasdaqMoldUDP>(
+            args.config_fpath,
+            MoldRetransmitRecoverer(args.rerequest_ip, args.rerequest_port,
+                                    REREQUEST_REPLY_TIMEOUT, MAX_RECOVERY_TIME,
+                                    MAX_REREQUEST_ATTEMPTS,
+                                    MAX_MESSAGES_PER_REREQUEST),
+            args.iface, args.mcast_group, args.port);
       }
       break;
     case Exchange::CME:
