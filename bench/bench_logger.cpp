@@ -1,22 +1,24 @@
 #include "bench_utils.hpp"
 #include "logger.hpp"
+#include "profiling.hpp"
+
 #include <algorithm>
-#include <charconv>
-#include <chrono>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <fcntl.h>
 #include <format>
 #include <fstream>
+#include <getopt.h>
+#include <optional>
 #include <print>
 #include <random>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <tuple>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -28,6 +30,9 @@ struct ToPrint {
 
 constexpr size_t MAX_ELEM = 4096;
 constexpr const char *FMT_C = "%s:%d fastbook: %d, %f\n";
+constexpr size_t BATCH = 512;
+constexpr size_t WARMUP = 1000;
+constexpr double PAUSE_NS = 5e6;
 
 std::vector<ToPrint> make_elems() {
   std::mt19937 rng(1234);
@@ -45,20 +50,18 @@ std::vector<ToPrint> make_elems() {
 
 const std::vector<ToPrint> ELEMS = make_elems();
 
-constexpr const char *LOG_PATH = "bench_log.txt";
-
 FILE *SINK_FILE = nullptr;
 int SINK_FD = -1;
 
-bool open_sink() {
-  SINK_FD = ::open(LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+bool open_sink(const char *path) {
+  SINK_FD = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (SINK_FD < 0) {
     return false;
   }
 
   SINK_FILE = ::fdopen(::dup(SINK_FD), "a");
 
-  return SINK_FILE != nullptr && logger::open_output(LOG_PATH);
+  return SINK_FILE != nullptr && logger::open_output(path);
 }
 
 uint64_t total_dropped() {
@@ -72,219 +75,304 @@ uint64_t total_dropped() {
   return total;
 }
 
-double measure_tsc_hz() {
-  using clock = std::chrono::steady_clock;
-  const auto wall_start = clock::now();
-  const uint64_t tsc_start = __rdtsc();
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-  const uint64_t tsc_end = __rdtsc();
-  const auto wall_end = clock::now();
-
-  const double seconds =
-      std::chrono::duration<double>(wall_end - wall_start).count();
-
-  return static_cast<double>(tsc_end - tsc_start) / seconds;
-}
-
-int64_t measure_pair_cost(size_t n) {
-  int64_t best = INT64_MAX;
-  for (size_t i = 0; i < n; i++) {
-    auto [t0, aux0] = rdtscp_start();
-    auto [t1, aux1] = rdtscp_end();
-    if (aux0 == aux1) {
-      best = std::min(best, static_cast<int64_t>(t1 - t0));
-    }
+uint64_t timer_overhead() {
+  std::vector<uint64_t> v(1 << 20);
+  for (auto &x : v) {
+    uint64_t t0 = profiling::read_tsc<true>();
+    uint64_t t1 = profiling::read_tsc<true>();
+    x = t1 - t0;
   }
-
-  return best == INT64_MAX ? 0 : best;
+  std::ranges::sort(v);
+  return v[v.size() / 2];
 }
 
-struct Stats {
-  size_t n{0};
-  int64_t min{0};
-  int64_t p50{0};
-  int64_t p90{0};
-  int64_t p99{0};
-  int64_t p999{0};
-  int64_t max{0};
-  double mean{0.0};
-  uint64_t drops{0};
+uint64_t ns_to_ticks(double ns) {
+  return static_cast<uint64_t>(ns / profiling::ns_per_tick());
+}
+
+void spin_until(uint64_t tsc) {
+  while (profiling::read_tsc() < tsc) {
+  }
+}
+
+using Pmu = profiling::PMUGroup<profiling::PMUMode::READ, 5>;
+
+constexpr std::array<profiling::Event, 5> PMU_EVENTS{
+    profiling::Event::CYCLES, profiling::Event::INSTRUCTIONS,
+    profiling::Event::AMD_L2_FILLS, profiling::Event::AMD_L3_FILLS,
+    profiling::Event::AMD_DRAM_FILLS};
+
+struct Run {
+  profiling::Histogram hist;
+  uint64_t ticks = 0;
+  uint64_t calls = 0;
+  uint64_t drops = 0;
+  uint64_t elapsed = 0;
+  Pmu::Counts counts{};
+  bool exact = true;
+
+  void add(const Pmu::Reading &before, const Pmu::Reading &after) {
+    for (size_t i = 0; i < counts.size(); i++) {
+      counts[i] += after.counts[i] - before.counts[i];
+    }
+    exact = exact && before.counting && after.counting &&
+            before.lost_time == after.lost_time;
+  }
 };
 
-int64_t quantile(const std::vector<int64_t> &sorted, double q) {
-  if (sorted.empty()) {
-    return 0;
-  }
-  const size_t idx =
-      static_cast<size_t>(static_cast<double>(sorted.size() - 1) * q);
-  return sorted[idx];
+Pmu::Reading read(Pmu *pmu) { return pmu ? pmu->read() : Pmu::Reading{}; }
+
+template <class F>
+void timed_call(F &body, uint64_t overhead, Run &r) {
+  const ToPrint &e = ELEMS[r.calls & (MAX_ELEM - 1)];
+  uint64_t t0 = profiling::read_tsc<true>();
+  body(e);
+  uint64_t t1 = profiling::read_tsc<true>();
+  uint64_t d = t1 - t0 > overhead ? t1 - t0 - overhead : 0;
+  r.hist.record(d);
+  r.ticks += d;
+  r.calls++;
 }
 
-constexpr size_t BATCH = 512;
-constexpr auto DRAIN_PAUSE = std::chrono::milliseconds(5);
+template <class F>
+Run measure_paced(F &&body, uint64_t samples, uint64_t overhead, Pmu *pmu) {
+  uint64_t pause = ns_to_ticks(PAUSE_NS);
+  for (size_t i = 0; i < WARMUP; i++) {
+    body(ELEMS[i & (MAX_ELEM - 1)]);
+  }
+  spin_until(profiling::read_tsc() + pause);
 
-template <typename F>
-Stats measure(F &&body, size_t n_samples, int64_t pair_cost,
-              std::vector<int64_t> &samples) {
-  samples.clear();
-
-  const uint64_t drops_before = total_dropped();
-
-  for (size_t done = 0; done < n_samples; done += BATCH) {
-    const size_t n = std::min(BATCH, n_samples - done);
-    for (size_t i = 0; i < n; i++) {
-      auto [t0, aux0] = rdtscp_start();
-      body(ELEMS[(done + i) & (MAX_ELEM - 1)]);
-      auto [t1, aux1] = rdtscp_end();
-
-      if (aux0 == aux1) {
-        samples.push_back(static_cast<int64_t>(t1 - t0) - pair_cost);
-      }
+  Run r;
+  uint64_t drops0 = total_dropped();
+  while (r.calls < samples) {
+    uint64_t n = std::min<uint64_t>(BATCH, samples - r.calls);
+    Pmu::Reading before = read(pmu);
+    uint64_t t0 = profiling::read_tsc();
+    for (uint64_t i = 0; i < n; i++) {
+      timed_call(body, overhead, r);
     }
-
-    std::this_thread::sleep_for(DRAIN_PAUSE);
+    r.elapsed += profiling::read_tsc() - t0;
+    r.add(before, read(pmu));
+    spin_until(profiling::read_tsc() + pause);
   }
+  r.drops = total_dropped() - drops0;
 
-  std::sort(samples.begin(), samples.end());
-
-  Stats s;
-  s.n = samples.size();
-  s.drops = total_dropped() - drops_before;
-  if (samples.empty()) {
-    return s;
-  }
-
-  s.min = samples.front();
-  s.p50 = quantile(samples, 0.50);
-  s.p90 = quantile(samples, 0.90);
-  s.p99 = quantile(samples, 0.99);
-  s.p999 = quantile(samples, 0.999);
-  s.max = samples.back();
-
-  int64_t sum = 0;
-  for (int64_t v : samples) {
-    sum += v;
-  }
-  s.mean = static_cast<double>(sum) / static_cast<double>(samples.size());
-
-  return s;
+  return r;
 }
 
-void print_row(std::string_view name, const Stats &s, double ns_per_cycle) {
-  std::print("{:<12} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9} {:>10.1f} {:>8}\n",
-             name, s.min, s.p50, s.p90, s.p99, s.p999, s.max,
-             static_cast<double>(s.p50) * ns_per_cycle, s.drops);
+Run measure_rate(uint64_t rate, double seconds, uint64_t overhead, Pmu *pmu) {
+  auto body = [](const ToPrint &e) { LOG_INFO("fastbook: {}, {}", e.x, e.y); };
+  for (size_t i = 0; i < WARMUP; i++) {
+    body(ELEMS[i & (MAX_ELEM - 1)]);
+  }
+  spin_until(profiling::read_tsc() + ns_to_ticks(PAUSE_NS));
+
+  uint64_t gap = rate ? ns_to_ticks(1e9 / static_cast<double>(rate)) : 0;
+  Run r;
+  uint64_t drops0 = total_dropped();
+  Pmu::Reading before = read(pmu);
+  uint64_t start = profiling::read_tsc();
+  uint64_t end = start + ns_to_ticks(seconds * 1e9);
+  for (uint64_t next = start; profiling::read_tsc() < end; next += gap) {
+    spin_until(next);
+    timed_call(body, overhead, r);
+  }
+  r.elapsed = profiling::read_tsc() - start;
+  r.add(before, read(pmu));
+  r.drops = total_dropped() - drops0;
+
+  return r;
 }
 
-bool parse_uint(std::string_view v, uint64_t &out) {
-  const char *end = v.data() + v.size();
-  auto [ptr, ec] = std::from_chars(v.data(), end, out);
-  return ec == std::errc{} && ptr == end;
+struct Options {
+  std::string mode = "compare";
+  const char *log_file = "bench_log.txt";
+  const char *perf_csv = nullptr;
+  int hot_cpu = 3;
+  int log_cpu = 4;
+  uint64_t samples = 1'000'000;
+  uint64_t rate = 0;
+  double seconds = 2.0;
+};
+
+void row(const Options &o, std::string_view name, Run &r, uint64_t overhead) {
+  double ns_per_tick = profiling::ns_per_tick();
+  double achieved = static_cast<double>(r.calls) /
+                    (static_cast<double>(r.elapsed) * ns_per_tick * 1e-9);
+  std::println("{},{},{},{},{},{:.0f},{},{},{:.2f},{:.0f},{:.0f},{:.0f},{},{},{:."
+               "4f}",
+               o.mode, name, o.hot_cpu, o.log_cpu, o.rate, achieved, r.calls,
+               r.drops,
+               static_cast<double>(r.ticks) / static_cast<double>(r.calls),
+               r.hist.percentile<50.0>(), r.hist.percentile<99.0>(),
+               r.hist.percentile<99.9>(), r.hist.max(), overhead, ns_per_tick);
+}
+
+void write_counters(const Options &o, std::string_view name, const Run &r) {
+  std::FILE *f = std::fopen(o.perf_csv, "a");
+  if (f == nullptr) {
+    std::println(stderr, "cannot open {}", o.perf_csv);
+    return;
+  }
+  for (size_t i = 0; i < PMU_EVENTS.size(); i++) {
+    const char *event =
+        profiling::EVENTS[std::to_underlying(PMU_EVENTS[i])].name;
+    std::println(f, "{},{},{},{},{},{},{},{}", o.mode, name, o.log_cpu, o.rate,
+                 r.calls, event, r.counts[i], r.exact ? "exact" : "scaled");
+  }
+  std::fclose(f);
+}
+
+void usage(const char *prog) {
+  std::println(stderr,
+               "Usage: {} [--mode compare|rate] [--samples N] [--rate CALLS_PER_S]"
+               " [--seconds S] [--hot-cpu C] [--log-cpu C] [--log-file PATH]"
+               " [--perf-csv FILE] [--header]",
+               prog);
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
-  uint64_t n_samples = 200000;
-
-  for (int i = 1; i < argc - 1; i++) {
-    const std::string_view arg = argv[i];
-    if (arg == "--samples" && !parse_uint(argv[i + 1], n_samples)) {
-      std::println(stdout, "bad --samples");
+  Options o;
+  static option long_opts[] = {{"mode", required_argument, nullptr, 'm'},
+                               {"samples", required_argument, nullptr, 'n'},
+                               {"rate", required_argument, nullptr, 'r'},
+                               {"seconds", required_argument, nullptr, 's'},
+                               {"hot-cpu", required_argument, nullptr, 'h'},
+                               {"log-cpu", required_argument, nullptr, 'l'},
+                               {"log-file", required_argument, nullptr, 'f'},
+                               {"perf-csv", required_argument, nullptr, 'P'},
+                               {"header", no_argument, nullptr, 'H'},
+                               {nullptr, 0, nullptr, 0}};
+  int c;
+  while ((c = getopt_long(argc, argv, "", long_opts, nullptr)) != -1) {
+    switch (c) {
+    case 'm':
+      o.mode = optarg;
+      break;
+    case 'n':
+      o.samples = std::strtoull(optarg, nullptr, 10);
+      break;
+    case 'r':
+      o.rate = std::strtoull(optarg, nullptr, 10);
+      break;
+    case 's':
+      o.seconds = std::strtod(optarg, nullptr);
+      break;
+    case 'h':
+      o.hot_cpu = std::atoi(optarg);
+      break;
+    case 'l':
+      o.log_cpu = std::atoi(optarg);
+      break;
+    case 'f':
+      o.log_file = optarg;
+      break;
+    case 'P':
+      o.perf_csv = optarg;
+      break;
+    case 'H':
+      std::println("mode,contender,hot_cpu,log_cpu,offered_rate,achieved_rate,"
+                   "calls,drops,mean_ticks,p50_ticks,p99_ticks,p999_ticks,"
+                   "max_ticks,overhead_ticks,ns_per_tick");
+      return 0;
+    default:
+      usage(argv[0]);
       return 1;
     }
   }
-
-  if (!open_sink()) {
-    std::println(stdout, "cannot open {}", LOG_PATH);
+  if (o.mode != "compare" && o.mode != "rate") {
+    usage(argv[0]);
     return 1;
   }
 
-  pin_to_core(1);
-
-  std::jthread backend(logger::logger_thread);
-  logger::thread_init();
-
-  const double tsc_hz = measure_tsc_hz();
-  const double ns_per_cycle = 1e9 / tsc_hz;
-  const int64_t pair_cost = measure_pair_cost(100000);
-
-  std::ofstream log_stream(LOG_PATH, std::ios::app);
-
-  std::string out;
-  out.reserve(256);
-  const std::string prerendered =
-      std::format("{}:{} fastbook: pre-rendered\n", __FILE__, __LINE__);
-
-  std::vector<int64_t> samples;
-  samples.reserve(n_samples);
-
-  // Warm up
-  for (size_t i = 0; i < 1000; i++) {
-    const ToPrint &e = ELEMS[i & (MAX_ELEM - 1)];
-    LOG_INFO("fastbook: {}, {}", e.x, e.y);
-    std::ignore = ::write(SINK_FD, prerendered.data(), prerendered.size());
-    std::fprintf(SINK_FILE, FMT_C, __FILE__, __LINE__, e.x, e.y);
-    log_stream << "warmup " << e.x << '\n';
-    out.clear();
-    std::format_to(std::back_inserter(out), "{}:{} fastbook: {}, {}\n",
-                   __FILE__, __LINE__, e.x, e.y);
+  pin_to_core(o.hot_cpu);
+  if (!open_sink(o.log_file)) {
+    std::println(stderr, "cannot open {}", o.log_file);
+    return 1;
   }
 
-  const Stats s_logger =
-      measure([](const ToPrint &e) { LOG_INFO("fastbook: {}, {}", e.x, e.y); },
-              n_samples, pair_cost, samples);
+  std::jthread backend([cpu = o.log_cpu](std::stop_token st) {
+    pin_to_core(cpu);
+    logger::logger_thread(st);
+  });
+  logger::thread_init();
 
-  const Stats s_write = measure(
-      [&](const ToPrint &) {
-        std::ignore = ::write(SINK_FD, prerendered.data(), prerendered.size());
-      },
-      n_samples, pair_cost, samples);
+  profiling::ns_per_tick();
+  uint64_t overhead = timer_overhead();
 
-  const Stats s_fprintf = measure(
-      [](const ToPrint &e) {
-        std::fprintf(SINK_FILE, FMT_C, __FILE__, __LINE__, e.x, e.y);
-      },
-      n_samples, pair_cost, samples);
+  std::optional<Pmu> pmu;
+  if (o.perf_csv != nullptr) {
+    pmu.emplace(PMU_EVENTS);
+  }
+  Pmu *p = pmu ? &*pmu : nullptr;
 
-  const Stats s_stream = measure(
-      [&](const ToPrint &e) {
-        log_stream << __FILE__ << ':' << __LINE__ << " fastbook: " << e.x
-                   << ", " << e.y << '\n';
-      },
-      n_samples, pair_cost, samples);
+  std::vector<std::pair<std::string_view, Run>> runs;
+  if (o.mode == "compare") {
+    std::ofstream log_stream(o.log_file, std::ios::app);
+    std::string out;
+    out.reserve(256);
+    const std::string prerendered =
+        std::format("{}:{} fastbook: pre-rendered\n", __FILE__, __LINE__);
 
-  const Stats s_format = measure(
-      [&](const ToPrint &e) {
-        out.clear();
-        std::format_to(std::back_inserter(out), "{}:{} fastbook: {}, {}\n",
-                       __FILE__, __LINE__, e.x, e.y);
-      },
-      n_samples, pair_cost, samples);
+    runs.emplace_back("empty",
+                      measure_paced([](const ToPrint &) {}, o.samples,
+                                    overhead, p));
+    runs.emplace_back(
+        "logger",
+        measure_paced(
+            [](const ToPrint &e) { LOG_INFO("fastbook: {}, {}", e.x, e.y); },
+            o.samples, overhead, p));
+    runs.emplace_back(
+        "write", measure_paced(
+                     [&](const ToPrint &) {
+                       std::ignore = ::write(SINK_FD, prerendered.data(),
+                                             prerendered.size());
+                     },
+                     o.samples, overhead, p));
+    runs.emplace_back(
+        "fprintf", measure_paced(
+                       [](const ToPrint &e) {
+                         std::fprintf(SINK_FILE, FMT_C, __FILE__, __LINE__,
+                                      e.x, e.y);
+                       },
+                       o.samples, overhead, p));
+    runs.emplace_back(
+        "ofstream", measure_paced(
+                        [&](const ToPrint &e) {
+                          log_stream << __FILE__ << ':' << __LINE__
+                                     << " fastbook: " << e.x << ", " << e.y
+                                     << '\n';
+                        },
+                        o.samples, overhead, p));
+    runs.emplace_back(
+        "format_to", measure_paced(
+                         [&](const ToPrint &e) {
+                           out.clear();
+                           std::format_to(std::back_inserter(out),
+                                          "{}:{} fastbook: {}, {}\n", __FILE__,
+                                          __LINE__, e.x, e.y);
+                         },
+                         o.samples, overhead, p));
+  } else {
+    runs.emplace_back("logger", measure_rate(o.rate, o.seconds, overhead, p));
+  }
 
   backend.request_stop();
   backend.join();
 
-  std::print(stdout,
-             "\nsamples={} batch={} tsc={:.3f} GHz clock_pair={} cycles\n\n",
-             n_samples, BATCH, tsc_hz / 1e9, pair_cost);
-  std::print(stdout,
-             "{:<12} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9} {:>10} {:>8}\n",
-             "contender", "min", "p50", "p90", "p99", "p99.9", "max",
-             "p50 (ns)", "drops");
-
-  print_row("logger", s_logger, ns_per_cycle);
-  print_row("write", s_write, ns_per_cycle);
-  print_row("fprintf", s_fprintf, ns_per_cycle);
-  print_row("ofstream", s_stream, ns_per_cycle);
-  print_row("format_to", s_format, ns_per_cycle);
+  for (auto &[name, r] : runs) {
+    row(o, name, r, overhead);
+    if (p != nullptr) {
+      write_counters(o, name, r);
+    }
+  }
 
   logger::close_output();
   std::fclose(SINK_FILE);
   ::close(SINK_FD);
-  ::unlink(LOG_PATH);
+  ::unlink(o.log_file);
 
   return 0;
 }
