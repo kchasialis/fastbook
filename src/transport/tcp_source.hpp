@@ -194,7 +194,7 @@ public:
       return std::unexpected(TransportStatus::WouldBlock);
     }
 
-    const int res = cqe->res;
+    int res = cqe->res;
     auto *data = static_cast<io_uring_data_t *>(io_uring_cqe_get_data(cqe));
     io_uring_cqe_seen(&ring_, cqe);
 
