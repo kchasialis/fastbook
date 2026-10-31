@@ -1,0 +1,15 @@
+table,workload,live,event,value,accuracy
+lp-tomb,churn,4096,cycles,108368906584,exact
+lp-tomb,churn,4096,instructions,190221410729,exact
+lp-tomb,churn,4096,amd-l2-fills,19601554,exact
+lp-tomb,churn,4096,amd-l3-fills,1231,exact
+lp-tomb,churn,4096,amd-dram-fills,49,exact
+lp-tomb,churn,4096,amd-dtlb-misses,21447,exact
+lp-tomb,churn,4096,page-faults,0,exact
+lp-tomb,churn,65536,cycles,115024271929,exact
+lp-tomb,churn,65536,instructions,110549895067,exact
+lp-tomb,churn,65536,amd-l2-fills,3493569,exact
+lp-tomb,churn,65536,amd-l3-fills,3200410,exact
+lp-tomb,churn,65536,amd-dram-fills,247,exact
+lp-tomb,churn,65536,amd-dtlb-misses,32499377,exact
+lp-tomb,churn,65536,page-faults,0,exact

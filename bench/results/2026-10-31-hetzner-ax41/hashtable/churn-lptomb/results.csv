@@ -1,0 +1,11 @@
+table,workload,live,mode,op,count,mean_ns,p50_ns,p99_ns,p999_ns,max_ns,table_mb,status
+lp-tomb,churn,4096,tp,all,5046272,5968.70,0.00,0.00,0.00,0.00,0.1,timeout
+lp-tomb,churn,4096,lat,insert,1616554,18437.80,19341.93,20479.71,22755.26,33139.97,0.1,timeout
+lp-tomb,churn,4096,lat,find,1616555,19.20,20.83,70.83,101.94,800.00,0.1,timeout
+lp-tomb,churn,4096,lat,erase,1616555,19.07,10.28,70.83,101.94,560.00,0.1,timeout
+lp-tomb,churn,4096,lat,all,4849664,6158.69,20.83,20479.71,21617.48,33139.97,0.1,timeout
+lp-tomb,churn,65536,tp,all,2228224,14347.52,0.00,0.00,0.00,0.00,2.0,timeout
+lp-tomb,churn,65536,lat,insert,720896,42879.03,4408.61,327679.46,345883.89,347569.72,2.0,timeout
+lp-tomb,churn,65536,lat,find,720896,26.90,20.83,84.17,124.17,350.00,2.0,timeout
+lp-tomb,churn,65536,lat,erase,720896,26.79,20.83,84.17,110.83,700.00,2.0,timeout
+lp-tomb,churn,65536,lat,all,2162688,14310.91,30.83,282168.39,345883.89,347569.72,2.0,timeout
