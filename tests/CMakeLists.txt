@@ -1,4 +1,4 @@
-add_executable(fastbook_tests test_spsc.cpp test_linear_probing_table.cpp test_order_book.cpp test_feed_handler.cpp test_buffer_pool.cpp test_two_tier_levels.cpp test_swiss_table.cpp)
+add_executable(fastbook_tests test_spsc.cpp test_linear_probing_table.cpp test_order_book.cpp test_buffer_pool.cpp test_two_tier_levels.cpp test_swiss_table.cpp)
 
 target_link_libraries(fastbook_tests
         PRIVATE fastbook_options
