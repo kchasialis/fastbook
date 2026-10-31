@@ -4,12 +4,14 @@
 #include "linear_probing_table.hpp"
 #include "logger.hpp"
 #include "order_book.hpp"
+#include "profiling.hpp"
 #include "threading.hpp"
 #include "types.hpp"
 #include <atomic>
 #include <cassert>
 #include <memory>
 #include <vector>
+#include <x86intrin.h>
 
 class BookBuilder {
 public:
@@ -25,6 +27,7 @@ private:
   Consumer consumer_;
   std::atomic<bool> stop_;
   Stats stats_;
+  profiling::Histogram tick_to_book_;
   LinearProbingTable<instrument_t, Book *> instrument_map_;
   bufpool::BufferPool &bp_ref_;
   std::vector<std::unique_ptr<Book>> owned_books_; // RAII
@@ -95,6 +98,12 @@ private:
   }
 
   void handle_event(const MboEvent &mbo) noexcept {
+    apply_event(mbo);
+    unsigned aux;
+    tick_to_book_.record(__rdtscp(&aux) - mbo.rx_tsc);
+  }
+
+  void apply_event(const MboEvent &mbo) noexcept {
     stats_.msgs++;
     switch (mbo.etype) {
     case EventType::ADDED:
@@ -163,6 +172,10 @@ public:
   void stop() { stop_.store(true, std::memory_order_release); }
 
   [[nodiscard]] const Stats &stats() const noexcept { return stats_; }
+
+  [[nodiscard]] const profiling::Histogram &tick_to_book() const noexcept {
+    return tick_to_book_;
+  }
 
   [[nodiscard]] size_t book_count() const noexcept {
     return owned_books_.size();

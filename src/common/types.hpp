@@ -29,6 +29,7 @@ struct MboEvent {
   oid_t orig_oid{};
   uint32_t price{};
   uint32_t qty{};
+  uint64_t rx_tsc{};
 };
 
 enum class Exchange : uint8_t { NASDAQ, CME, CBOE, NYSE, EUREX };

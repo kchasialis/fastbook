@@ -4,6 +4,7 @@
 #include "buffer_pool.hpp"
 #include "event_queue.hpp"
 #include "logger.hpp"
+#include "profiling.hpp"
 #include "thread_config.hpp"
 #include "threading.hpp"
 #include "timing.hpp"
@@ -102,6 +103,12 @@ private:
                i, st.msgs, book_builders_[i]->book_count(), st.dropped_adds,
                st.unknown_oids);
     }
+
+    profiling::Histogram tick_to_book;
+    for (const auto &bb_builder : book_builders_) {
+      tick_to_book.merge(bb_builder->tick_to_book());
+    }
+    tick_to_book.report("tick_to_book_ns", profiling::ns_per_tick());
 
     const uint64_t rate = ms > 0 ? total * 1000 / ms : 0;
     LOG_INFO("{} msgs in {} ms ({} msgs/s), feed stalled on a full queue {} "

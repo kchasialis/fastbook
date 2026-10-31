@@ -18,6 +18,7 @@
 #include <span>
 #include <sys/types.h>
 #include <vector>
+#include <x86intrin.h>
 
 template <Transport Src, Framer F, Parser P, Recoverer<F> R> class VenueFeed {
 private:
@@ -29,6 +30,7 @@ private:
   std::atomic<bool> finished_;
   uint64_t queue_full_{0};
   uint64_t malformed_{0};
+  uint64_t rx_tsc_{0};
   bufpool::BufferPool &bp_ref_;
 
   static constexpr uint32_t MAX_RECOVERIES = 3;
@@ -97,13 +99,15 @@ public:
 
   void on_event(const MboEvent &e) noexcept {
     static_assert(std::has_single_bit(N_SHARDS));
-    Producer &producer = producers_[e.instrument & (N_SHARDS - 1)];
-    if (producer.push(e)) [[likely]] {
+    MboEvent stamped = e;
+    stamped.rx_tsc = rx_tsc_;
+    Producer &producer = producers_[stamped.instrument & (N_SHARDS - 1)];
+    if (producer.push(stamped)) [[likely]] {
       return;
     }
 
     queue_full_++;
-    while (!producer.push(e)) {
+    while (!producer.push(stamped)) {
       if (stop_requested_.load(std::memory_order_relaxed)) {
         return;
       }
@@ -148,6 +152,7 @@ public:
         }
         continue;
       }
+      rx_tsc_ = __rdtsc();
       auto ret = framer_.feed(buf->bytes(), *this);
       if (!ret.has_value()) [[unlikely]] {
         on_framer_error(buf->bytes(), ret.error());

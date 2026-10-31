@@ -145,6 +145,15 @@ class Histogram {
   }
 
 public:
+  void merge(const Histogram &other) {
+    for (size_t i = 0; i < samples.size(); i++) {
+      samples[i] += other.samples[i];
+    }
+    total_samples += other.total_samples;
+    min_value = std::min(min_value, other.min_value);
+    max_value = std::max(max_value, other.max_value);
+  }
+
   void record(uint64_t value) {
     min_value = std::min(min_value, value);
     max_value = std::max(max_value, value);
