@@ -1,12 +1,40 @@
 #pragma once
 
 #include <cerrno>
+#include <cstdlib>
 #include <format>
+#include <memory>
+#include <new>
 #include <source_location>
 #include <string_view>
+#include <sys/mman.h>
 #include <system_error>
+#include <type_traits>
 #include <unistd.h>
 #include <utility>
+
+inline constexpr size_t PAGE_BYTES = 4096;
+
+struct FreeDeleter {
+  void operator()(void *p) const noexcept { std::free(p); }
+};
+
+template <class T> using PrefaultedArray = std::unique_ptr<T[], FreeDeleter>;
+
+template <class T>
+  requires std::is_trivially_destructible_v<T>
+PrefaultedArray<T> make_prefaulted_array(size_t n) {
+  size_t bytes = (n * sizeof(T) + PAGE_BYTES - 1) / PAGE_BYTES * PAGE_BYTES;
+  void *mem = std::aligned_alloc(PAGE_BYTES, bytes);
+  if (mem == nullptr) {
+    throw std::bad_alloc();
+  }
+  (void)::madvise(mem, bytes, MADV_POPULATE_WRITE);
+
+  T *arr = static_cast<T *>(mem);
+  std::uninitialized_value_construct_n(arr, n);
+  return PrefaultedArray<T>(arr);
+}
 
 inline int check(int rc, std::string_view what,
                  std::source_location loc = std::source_location::current()) {

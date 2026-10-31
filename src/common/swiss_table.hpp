@@ -187,8 +187,8 @@ private:
 
   using FindResult = std::pair<bool, size_t>;
 
-  std::unique_ptr<Control[]> ctrl_;
-  std::unique_ptr<ValueType[]> data_;
+  PrefaultedArray<Control> ctrl_;
+  PrefaultedArray<ValueType> data_;
   size_t size_;
   size_t capacity_;
   size_t growth_left_;
@@ -283,8 +283,9 @@ private:
 
 public:
   SwissTable(size_t capacity)
-      : ctrl_(new Control[capacity + G::WIDTH]), data_(new ValueType[capacity]),
-        size_(0), capacity_(capacity), growth_left_(growth_for(capacity)),
+      : ctrl_(make_prefaulted_array<Control>(capacity + G::WIDTH)),
+        data_(make_prefaulted_array<ValueType>(capacity)), size_(0),
+        capacity_(capacity), growth_left_(growth_for(capacity)),
         shift_(std::numeric_limits<size_t>::digits -
                std::countr_zero(capacity)) {
     if (!std::has_single_bit(capacity) || capacity < G::WIDTH) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "logger.hpp"
+#include "sys.hpp"
 #include <bit>
 #include <cassert>
 #include <cstdint>
@@ -26,7 +27,7 @@ template <TrivialKey K, HashNode V, typename Hash = FibHash<K>,
           EraseMode Mode = EraseMode::BackwardShift>
 class LinearProbingTable {
 private:
-  std::unique_ptr<std::pair<K, V>[]> data_;
+  PrefaultedArray<std::pair<K, V>> data_;
   size_t size_;
   size_t capacity_;
   int shift_;
@@ -69,7 +70,7 @@ private:
 
 public:
   LinearProbingTable(size_t capacity)
-      : data_(new std::pair<K, V>[capacity << 1]()), size_(0),
+      : data_(make_prefaulted_array<std::pair<K, V>>(capacity << 1)), size_(0),
         capacity_(capacity << 1), shift_(std::numeric_limits<size_t>::digits -
                                          std::countr_zero(capacity_)) {
     if (!std::has_single_bit(capacity)) {
