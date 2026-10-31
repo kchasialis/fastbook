@@ -15,23 +15,44 @@ private:
   alignas(T) std::byte buffer_[N * sizeof(T)];
   alignas(
       std::hardware_destructive_interference_size) std::atomic<size_t> head_;
+  size_t cached_tail_;
   alignas(
       std::hardware_destructive_interference_size) std::atomic<size_t> tail_;
+  size_t cached_head_;
 
-  bool empty_at(size_t tail_val) const noexcept {
-    return head_.load(std::memory_order_acquire) == tail_val;
+  bool empty_at(size_t tail_val) noexcept {
+    if (tail_val != cached_head_) [[likely]] {
+      return false;
+    }
+    size_t head_val = head_.load(std::memory_order_acquire);
+    if (head_val == tail_val) {
+      return true;
+    }
+    cached_head_ = head_val;
+    return false;
   }
 
   bool empty() const noexcept {
-    return empty_at(tail_.load(std::memory_order_relaxed));
+    return head_.load(std::memory_order_acquire) ==
+           tail_.load(std::memory_order_relaxed);
   }
 
-  bool full_at(size_t head_val) const noexcept {
-    return ((head_val + 1) & (N - 1)) == tail_.load(std::memory_order_acquire);
+  bool full_at(size_t head_val) noexcept {
+    size_t next = (head_val + 1) & (N - 1);
+    if (next != cached_tail_) [[likely]] {
+      return false;
+    }
+    size_t tail_val = tail_.load(std::memory_order_acquire);
+    if (tail_val == next) {
+      return true;
+    }
+    cached_tail_ = tail_val;
+    return false;
   }
 
   bool full() const noexcept {
-    return full_at(head_.load(std::memory_order_relaxed));
+    return ((head_.load(std::memory_order_relaxed) + 1) & (N - 1)) ==
+           tail_.load(std::memory_order_acquire);
   }
 
   // Reserves a slot for writing, uninitialized memory.
@@ -79,7 +100,8 @@ private:
   }
 
 public:
-  SPSCQueue() noexcept : head_(0), tail_(0) {}
+  SPSCQueue() noexcept
+      : head_(0), cached_tail_(0), tail_(0), cached_head_(0) {}
   SPSCQueue(const SPSCQueue &) = delete;
   SPSCQueue &operator=(const SPSCQueue &) = delete;
   SPSCQueue(SPSCQueue &&) = delete;

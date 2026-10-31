@@ -1,13 +1,22 @@
 #include "bench_utils.hpp"
 #include "spsc_queue.hpp"
 #include <benchmark/benchmark.h>
+#include <cstdlib>
 #include <mutex>
 #include <optional>
 #include <queue>
 #include <thread>
 
+static int env_core(const char *name, int fallback) {
+  const char *s = std::getenv(name);
+  return s ? std::atoi(s) : fallback;
+}
+
+static const int CORE_A = env_core("BENCH_CORE_A", 0);
+static const int CORE_B = env_core("BENCH_CORE_B", 1);
+
 static void BM_SPSC_Throughput(benchmark::State &state) {
-  pin_to_core(0);
+  pin_to_core(CORE_A);
 
   SPSCQueue<uint64_t, 65536> q;
   auto prod = q.producer();
@@ -18,7 +27,7 @@ static void BM_SPSC_Throughput(benchmark::State &state) {
   std::atomic<bool> done{false};
 
   std::thread producer([&] {
-    pin_to_core(1);
+    pin_to_core(CORE_B);
     while (!done.load(std::memory_order_relaxed)) {
       int64_t batch = to_produce.exchange(0, std::memory_order_acquire);
       for (int64_t i = 0; i < batch; i++) {
@@ -48,7 +57,7 @@ static void BM_SPSC_Throughput(benchmark::State &state) {
 BENCHMARK(BM_SPSC_Throughput)->Arg(1 << 16)->UseRealTime();
 
 static void BM_SPSC_Latency(benchmark::State &state) {
-  pin_to_core(0);
+  pin_to_core(CORE_A);
 
   SPSCQueue<uint64_t, 2> q_ping, q_pong;
   auto ping_prod = q_ping.producer();
@@ -58,7 +67,7 @@ static void BM_SPSC_Latency(benchmark::State &state) {
 
   std::atomic<bool> done{false};
   std::thread responder([&] {
-    pin_to_core(1);
+    pin_to_core(CORE_B);
     while (!done.load(std::memory_order_relaxed)) {
       auto v = ping_cons.pop();
       if (v)
@@ -88,7 +97,7 @@ static void BM_SPSC_Latency(benchmark::State &state) {
 BENCHMARK(BM_SPSC_Latency)->UseRealTime();
 
 static void BM_Mutex_Throughput(benchmark::State &state) {
-  pin_to_core(0);
+  pin_to_core(CORE_A);
 
   std::queue<uint64_t> q;
   std::mutex mtx;
@@ -98,7 +107,7 @@ static void BM_Mutex_Throughput(benchmark::State &state) {
   std::atomic<bool> done{false};
 
   std::thread producer([&] {
-    pin_to_core(1);
+    pin_to_core(CORE_B);
     while (!done.load(std::memory_order_relaxed)) {
       int64_t batch = to_produce.exchange(0, std::memory_order_acquire);
       for (int64_t i = 0; i < batch; i++) {
@@ -134,14 +143,14 @@ static void BM_Mutex_Throughput(benchmark::State &state) {
 BENCHMARK(BM_Mutex_Throughput)->Arg(1 << 16)->UseRealTime();
 
 static void BM_Mutex_Latency(benchmark::State &state) {
-  pin_to_core(0);
+  pin_to_core(CORE_A);
 
   std::queue<uint64_t> q_ping, q_pong;
   std::mutex mtx_ping, mtx_pong;
 
   std::atomic<bool> done{false};
   std::thread responder([&] {
-    pin_to_core(1);
+    pin_to_core(CORE_B);
     while (!done.load(std::memory_order_relaxed)) {
       uint64_t v;
       {
